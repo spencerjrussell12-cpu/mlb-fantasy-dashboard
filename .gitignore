@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 power_bi_data/
 google_credentials.json
+.streamlit/secrets.toml
