@@ -5,3 +5,4 @@ __pycache__/
 power_bi_data/
 google_credentials.json
 .streamlit/secrets.toml
+.streamlit/secrets.toml
