@@ -2,15 +2,16 @@
 MLB Stats + Yahoo Fantasy Baseball Data Pipeline
 ================================================
 Pulls real MLB performance data + your Yahoo Fantasy league data
-and exports clean CSVs ready for Power BI.
+and exports clean CSVs (local) + Google Sheets (cloud-ready).
 
 Requirements:
-    pip install pybaseball yfpy pandas requests python-dotenv
+    pip install pybaseball yfpy pandas requests python-dotenv gspread google-auth
 
 Setup:
     1. Create a .env file in the same directory (see .env.example)
     2. Register a Yahoo app at: https://developer.yahoo.com/apps/
-    3. Run this script — it will walk you through Yahoo OAuth on first run
+    3. Place google_credentials.json in the same directory
+    4. Run this script — it will walk you through Yahoo OAuth on first run
 """
 
 import os
@@ -18,10 +19,10 @@ import json
 import time
 import requests
 import pandas as pd
-from datetime import datetime, date
+import gspread
+from google.oauth2.service_account import Credentials
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
-from datetime import timedelta
-
 
 # ── pybaseball ────────────────────────────────────────────────────────────────
 from pybaseball import (
@@ -34,7 +35,7 @@ from pybaseball import (
     statcast,
 )
 from pybaseball import cache
-cache.enable()  # Cache results so you don't hammer the servers
+cache.enable()
 
 # ── Yahoo Fantasy ─────────────────────────────────────────────────────────────
 from yfpy.query import YahooFantasySportsQuery
@@ -43,13 +44,25 @@ from pathlib import Path
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION  (edit these or put them in your .env file)
+# CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-CURRENT_YEAR    = 2025          # 2026 automatically
-OUTPUT_DIR = "/Users/spencerrussell/OneDrive - G&G Outfitters/power_bi_data"              # folder where CSVs land
-YAHOO_GAME_ID   = "469"                        # Yahoo's game key for MLB
+TODAY           = date.today()
+CURRENT_YEAR    = TODAY.year
+DATE_FROM       = date(2025, 3, 27)
+DATE_TO         = TODAY
+
+OUTPUT_DIR      = "/Users/spencerrussell/OneDrive - G&G Outfitters/power_bi_data"
+YAHOO_GAME_ID   = "469"
 YAHOO_LEAGUE_ID = os.getenv("YAHOO_LEAGUE_ID", "YOUR_LEAGUE_ID_HERE")
+
+# ── Google Sheets config ──────────────────────────────────────────────────────
+SHEET_ID        = "1RVPs1V-2T6-XmZEi4AMnbWfo3RyI5ZYKxA0pkbsn5aA"
+CREDS_FILE      = os.path.join(os.path.dirname(__file__), "google_credentials.json")
+SCOPES          = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 YAHOO_STAT_MAP = {
     7:  "Runs",
@@ -66,14 +79,6 @@ YAHOO_STAT_MAP = {
     60: "NSB",
 }
 
-# Date range for recent stats (last 30 days by default)
-
-TODAY        = date.today()
-CURRENT_YEAR = TODAY.year
-SEASON_START = date(CURRENT_YEAR, 3, 27)
-DATE_FROM    = date(2025, 3, 27)   # always pull from 2025 Opening Day
-DATE_TO      = TODAY
-
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print(f"\n{'='*60}")
@@ -83,39 +88,70 @@ print(f"{'='*60}\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GOOGLE SHEETS HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def init_sheets():
+    """Initialize Google Sheets client."""
+    try:
+        creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(SHEET_ID)
+        print("   ✓ Google Sheets connected")
+        return sheet
+    except Exception as e:
+        print(f"   ✗ Google Sheets connection failed: {e}")
+        return None
+
+
+def export_to_sheet(sheet, df: pd.DataFrame, tab_name: str):
+    """
+    Write a DataFrame to a named tab in Google Sheets.
+    Creates the tab if it doesn't exist. Clears and rewrites each run.
+    """
+    if df.empty:
+        print(f"   ⚠ Skipping Sheets tab '{tab_name}' — no data")
+        return
+    try:
+        # Get or create the worksheet tab
+        try:
+            ws = sheet.worksheet(tab_name)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sheet.add_worksheet(title=tab_name, rows=5000, cols=50)
+
+        # Clean the dataframe — convert all values to strings for Sheets compatibility
+        df_clean = df.fillna("").astype(str)
+
+        # Build data: header row + all data rows
+        data = [df_clean.columns.tolist()] + df_clean.values.tolist()
+
+        # Clear and rewrite
+        ws.clear()
+        ws.update(data, value_input_option="USER_ENTERED")
+        print(f"   ☁️  Sheets → '{tab_name}'  ({len(df)} rows)")
+
+    except Exception as e:
+        print(f"   ✗ Sheets export failed for '{tab_name}': {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PART 1 — MLB STATS VIA PYBASEBALL
 # ─────────────────────────────────────────────────────────────────────────────
 
 def pull_mlb_batting(year: int) -> pd.DataFrame:
     """Pull season-level batting stats from FanGraphs via pybaseball."""
-    print("📊 Pulling MLB batting stats...")
+    print(f"📊 Pulling MLB batting stats ({year})...")
     try:
-        df = batting_stats(year, qual=50)  # min 50 PA to filter noise
-        # Rename / select key columns
+        df = batting_stats(year, qual=50)
         cols = {
-            "Name": "player_name",
-            "Team": "team",
-            "G": "games",
-            "PA": "plate_appearances",
-            "AB": "at_bats",
-            "H": "hits",
-            "HR": "home_runs",
-            "RBI": "rbi",
-            "R": "runs",
-            "SB": "stolen_bases",
-            "AVG": "avg",
-            "OBP": "obp",
-            "SLG": "slg",
-            "OPS": "ops",
-            "wRC+": "wrc_plus",
-            "WAR": "war_bat",
-            "K%": "k_pct",
-            "BB%": "bb_pct",
-            "BABIP": "babip",
-            "Hard%": "hard_hit_pct",
-            "xFIP": "xfip",       # sometimes in batting too
+            "Name": "player_name", "Team": "team", "G": "games",
+            "PA": "plate_appearances", "AB": "at_bats", "H": "hits",
+            "HR": "home_runs", "RBI": "rbi", "R": "runs",
+            "SB": "stolen_bases", "AVG": "avg", "OBP": "obp",
+            "SLG": "slg", "OPS": "ops", "wRC+": "wrc_plus",
+            "WAR": "war_bat", "K%": "k_pct", "BB%": "bb_pct",
+            "BABIP": "babip", "Hard%": "hard_hit_pct", "xFIP": "xfip",
         }
-        # Keep only columns that exist in the dataframe
         existing = {k: v for k, v in cols.items() if k in df.columns}
         df = df.rename(columns=existing)[list(existing.values())]
         df["season"] = year
@@ -129,30 +165,17 @@ def pull_mlb_batting(year: int) -> pd.DataFrame:
 
 def pull_mlb_pitching(year: int) -> pd.DataFrame:
     """Pull season-level pitching stats from FanGraphs via pybaseball."""
-    print("⚾ Pulling MLB pitching stats...")
+    print(f"⚾ Pulling MLB pitching stats ({year})...")
     try:
-        df = pitching_stats(year, qual=20)  # min 20 IP
+        df = pitching_stats(year, qual=20)
         cols = {
-            "Name": "player_name",
-            "Team": "team",
-            "G": "games",
-            "GS": "games_started",
-            "IP": "innings_pitched",
-            "W": "wins",
-            "L": "losses",
-            "SV": "saves",
-            "SO": "strikeouts",
-            "ERA": "era",
-            "WHIP": "whip",
-            "K/9": "k_per_9",
-            "BB/9": "bb_per_9",
-            "HR/9": "hr_per_9",
-            "FIP": "fip",
-            "xFIP": "xfip",
-            "WAR": "war_pitch",
-            "K%": "k_pct",
-            "BB%": "bb_pct",
-            "BABIP": "babip",
+            "Name": "player_name", "Team": "team", "G": "games",
+            "GS": "games_started", "IP": "innings_pitched", "W": "wins",
+            "L": "losses", "SV": "saves", "SO": "strikeouts",
+            "ERA": "era", "WHIP": "whip", "K/9": "k_per_9",
+            "BB/9": "bb_per_9", "HR/9": "hr_per_9", "FIP": "fip",
+            "xFIP": "xfip", "WAR": "war_pitch", "K%": "k_pct",
+            "BB%": "bb_pct", "BABIP": "babip",
         }
         existing = {k: v for k, v in cols.items() if k in df.columns}
         df = df.rename(columns=existing)[list(existing.values())]
@@ -166,13 +189,13 @@ def pull_mlb_pitching(year: int) -> pd.DataFrame:
 
 
 def pull_recent_batting(start: date, end: date) -> pd.DataFrame:
-    """Pull last-N-days batting splits — great for hot/cold streaks."""
+    """Pull last-N-days batting splits."""
     print(f"🔥 Pulling recent batting ({start} → {end})...")
     try:
         df = batting_stats_range(str(start), str(end))
         df["date_from"] = str(start)
         df["date_to"]   = str(end)
-        df.columns = [c.lower().replace(" ", "_").replace("%", "_pct").replace("/", "_per_") 
+        df.columns = [c.lower().replace(" ", "_").replace("%", "_pct").replace("/", "_per_")
                       for c in df.columns]
         print(f"   ✓ {len(df)} recent batter rows loaded")
         return df
@@ -188,7 +211,7 @@ def pull_recent_pitching(start: date, end: date) -> pd.DataFrame:
         df = pitching_stats_range(str(start), str(end))
         df["date_from"] = str(start)
         df["date_to"]   = str(end)
-        df.columns = [c.lower().replace(" ", "_").replace("%", "_pct").replace("/", "_per_") 
+        df.columns = [c.lower().replace(" ", "_").replace("%", "_pct").replace("/", "_per_")
                       for c in df.columns]
         print(f"   ✓ {len(df)} recent pitcher rows loaded")
         return df
@@ -198,10 +221,7 @@ def pull_recent_pitching(start: date, end: date) -> pd.DataFrame:
 
 
 def pull_upcoming_schedule() -> pd.DataFrame:
-    """
-    Pull this week's MLB schedule via the official MLB Stats API.
-    No auth required.
-    """
+    """Pull this week's MLB schedule via the official MLB Stats API."""
     print("📅 Pulling upcoming schedule...")
     try:
         url = "https://statsapi.mlb.com/api/v1/schedule"
@@ -224,14 +244,14 @@ def pull_upcoming_schedule() -> pd.DataFrame:
                 home_pitcher = (game.get("teams", {}).get("home", {})
                                     .get("probablePitcher", {}).get("fullName", "TBD"))
                 rows.append({
-                    "game_date":     day["date"],
-                    "game_pk":       game["gamePk"],
-                    "away_team":     game["teams"]["away"]["team"]["name"],
-                    "home_team":     game["teams"]["home"]["team"]["name"],
-                    "venue":         game.get("venue", {}).get("name", ""),
-                    "away_pitcher":  away_pitcher,
-                    "home_pitcher":  home_pitcher,
-                    "status":        game["status"]["detailedState"],
+                    "game_date":    day["date"],
+                    "game_pk":      game["gamePk"],
+                    "away_team":    game["teams"]["away"]["team"]["name"],
+                    "home_team":    game["teams"]["home"]["team"]["name"],
+                    "venue":        game.get("venue", {}).get("name", ""),
+                    "away_pitcher": away_pitcher,
+                    "home_pitcher": home_pitcher,
+                    "status":       game["status"]["detailedState"],
                 })
 
         df = pd.DataFrame(rows)
@@ -249,8 +269,7 @@ def pull_upcoming_schedule() -> pd.DataFrame:
 def init_yahoo():
     print("🏆 Connecting to Yahoo Fantasy...")
     try:
-        env_path = Path(os.path.dirname(__file__))  # directory, not the file itself
-        
+        env_path = Path(os.path.dirname(__file__))
         query = YahooFantasySportsQuery(
             league_id=YAHOO_LEAGUE_ID,
             game_code="mlb",
@@ -269,8 +288,8 @@ def init_yahoo():
 
 
 def pull_my_roster(query: YahooFantasySportsQuery) -> pd.DataFrame:
-    """Pull your current fantasy roster."""
-    print("📋 Pulling your fantasy roster...")
+    """Pull current fantasy roster for all teams."""
+    print("📋 Pulling fantasy rosters...")
     try:
         roster = query.get_league_teams()
         rows = []
@@ -300,11 +319,10 @@ def pull_my_roster_stats(query: YahooFantasySportsQuery) -> pd.DataFrame:
     try:
         teams = query.get_league_teams()
         rows = []
-
         for team in teams:
             team_name = str(team.name).strip("b'").strip("'")
             roster_stats = query.get_team_roster_player_stats_by_week(
-                team.team_id, chosen_week="current"
+                team.team_id, chosen_week= 2
             )
             for player in roster_stats:
                 row = {
@@ -315,23 +333,20 @@ def pull_my_roster_stats(query: YahooFantasySportsQuery) -> pd.DataFrame:
                 }
                 if hasattr(player, "player_stats") and player.player_stats is not None:
                     for s in player.player_stats.stats:
-                        stat_name = YAHOO_STAT_MAP.get(int(s.stat_id),f"stat_{s.stat_id}")
+                        stat_name = YAHOO_STAT_MAP.get(int(s.stat_id), f"stat_{s.stat_id}")
                         row[stat_name] = s.value
                 rows.append(row)
-
         df = pd.DataFrame(rows)
         print(f"   ✓ Weekly stats pulled for {len(df)} players across {len(teams)} teams")
         return df
-
     except Exception as e:
         print(f"   ✗ Roster stats pull failed: {e}")
         return pd.DataFrame()
 
 
-
 def pull_my_team_stats(query: YahooFantasySportsQuery) -> pd.DataFrame:
-    """Pull your team's accumulated fantasy stats."""
-    print("📈 Pulling your fantasy team stats...")
+    """Pull accumulated fantasy stats for all teams."""
+    print("📈 Pulling fantasy team stats...")
     try:
         teams = query.get_league_teams()
         rows = []
@@ -343,7 +358,9 @@ def pull_my_team_stats(query: YahooFantasySportsQuery) -> pd.DataFrame:
                 "losses":            getattr(team, "losses", None),
                 "ties":              getattr(team, "ties", None),
                 "points":            getattr(team, "points", None),
-                "standing":          getattr(team, "team_standings", {}).get("rank", None) if hasattr(team, "team_standings") and isinstance(team.team_standings, dict) else None,
+                "standing":          getattr(team, "team_standings", {}).get("rank", None)
+                                     if hasattr(team, "team_standings") and isinstance(team.team_standings, dict)
+                                     else None,
             }
             rows.append(row)
         df = pd.DataFrame(rows)
@@ -358,7 +375,6 @@ def pull_waiver_wire(query: YahooFantasySportsQuery, top_n: int = 60) -> pd.Data
     """Pull top available free agents on the waiver wire."""
     print(f"📡 Pulling top {top_n} waiver wire players...")
     try:
-        # Get all rostered player IDs to exclude
         roster = query.get_league_teams()
         rostered_ids = set()
         for team in roster:
@@ -366,21 +382,15 @@ def pull_waiver_wire(query: YahooFantasySportsQuery, top_n: int = 60) -> pd.Data
             for player in team_roster.players:
                 rostered_ids.add(str(player.player_id))
 
-        # Pull players and filter out rostered ones
         players = query.get_league_players(player_count_limit=200)
         rows = []
         for p in players:
             if str(p.player_id) in rostered_ids:
                 continue
-
-            # Team
             try:
-                team = str(p.editorial_team_abbr)
-                team = team.replace("b'", "").replace("'", "").strip()
+                team = str(p.editorial_team_abbr).replace("b'", "").replace("'", "").strip()
             except:
                 team = ""
-
-            # Ownership
             try:
                 pct = p.percent_owned
                 ownership = float(pct.value) if hasattr(pct, "value") else None
@@ -388,13 +398,12 @@ def pull_waiver_wire(query: YahooFantasySportsQuery, top_n: int = 60) -> pd.Data
                 ownership = None
 
             rows.append({
-                "player_name":   p.name.full,
-                "player_id":     p.player_id,
-                "position":      p.display_position,
-                "status":        getattr(p, "status", "Active"),
-                "team":          team,
+                "player_name": p.name.full,
+                "player_id":   p.player_id,
+                "position":    p.display_position,
+                "status":      getattr(p, "status", "Active"),
+                "team":        team,
             })
-
             if len(rows) >= top_n:
                 break
 
@@ -417,7 +426,6 @@ def pull_matchup(query: YahooFantasySportsQuery) -> pd.DataFrame:
             t2 = m.teams[1]
             rows.append({
                 "team_1":       str(t1.name).strip("b'").strip("'"),
-                "team_1":       str(t1.name).strip("b'").strip("'"),
                 "team_1_score": getattr(t1.team_points, "total", 0),
                 "team_2":       str(t2.name).strip("b'").strip("'"),
                 "team_2_score": getattr(t2.team_points, "total", 0),
@@ -428,6 +436,112 @@ def pull_matchup(query: YahooFantasySportsQuery) -> pd.DataFrame:
         return df
     except Exception as e:
         print(f"   ✗ Matchup pull failed: {e}")
+        return pd.DataFrame()
+
+def pull_matchup_category_stats(week: int = None) -> pd.DataFrame:
+    """Pull real category stats per team per week directly from Yahoo API."""
+    print("📊 Pulling category stats from Yahoo API...")
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        token    = os.getenv("YAHOO_ACCESS_TOKEN")
+        week_num = week or TODAY.isocalendar()[1]  # fallback to current ISO week
+
+        # First get current week from scoreboard
+        url = f"https://fantasysports.yahooapis.com/fantasy/v2/league/469.l.{YAHOO_LEAGUE_ID}/scoreboard?format=json"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data      = r.json()
+        week_num  = int(data["fantasy_content"]["league"][1]["scoreboard"]["week"])
+
+        # Now pull that week's stats
+        url  = f"https://fantasysports.yahooapis.com/fantasy/v2/league/469.l.{YAHOO_LEAGUE_ID}/scoreboard;week={week_num}?format=json"
+        r    = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+
+        matchups = data["fantasy_content"]["league"][1]["scoreboard"]["0"]["matchups"]
+        
+        STAT_MAP = {
+            "7":  "Runs",
+            "12": "HR",
+            "13": "RBI",
+            "16": "SB",
+            "4":  "OBP",
+            "28": "Wins",
+            "32": "Saves",
+            "42": "K",
+            "26": "ERA",
+            "27": "WHIP",
+            "50": "IP",
+            "60": "NSB",
+        }
+
+        rows = []
+        for i in range(6):
+            key = str(i)
+            if key not in matchups:
+                break
+            matchup = matchups[key]["matchup"]
+            teams   = matchup["0"]["teams"]
+            
+            # get stat winners for this matchup
+            stat_winners = {}
+            for sw in matchup.get("stat_winners", []):
+                s = sw["stat_winner"]
+                sid = s["stat_id"]
+                if "is_tied" in s:
+                    stat_winners[sid] = "tied"
+                else:
+                    stat_winners[sid] = s.get("winner_team_key", "")
+
+            for t_key in ["0", "1"]:
+                team_data  = teams[t_key]["team"]
+                team_info  = team_data[0]
+                team_name  = next((x["name"] for x in team_info if "name" in x), "")
+                team_key   = next((x["team_key"] for x in team_info if "team_key" in x), "")
+                team_stats = team_data[1]["team_stats"]["stats"]
+                
+                row = {
+                    "fantasy_team_name": team_name,
+                    "team_key":          team_key,
+                    "week":              week_num,
+                    "team_points":       float(team_data[1]["team_points"]["total"]),
+                }
+
+                for stat in team_stats:
+                    s    = stat["stat"]
+                    sid  = s["stat_id"]
+                    val  = s["value"]
+                    name = STAT_MAP.get(sid)
+                    if name:
+                        # skip fraction values like "12/46" (NSB)
+                        try:
+                            row[name] = float(val)
+                        except (ValueError, TypeError):
+                            row[name] = None
+
+                # add win/loss/tie per category
+                for sid, winner in stat_winners.items():
+                    cat = STAT_MAP.get(sid)
+                    if cat:
+                        if winner == "tied":
+                            row[f"{cat}_result"] = "tied"
+                        elif winner == team_key:
+                            row[f"{cat}_result"] = "win"
+                        else:
+                            row[f"{cat}_result"] = "loss"
+
+                rows.append(row)
+
+        df = pd.DataFrame(rows)
+        print(f"   ✓ Category stats loaded for {len(df)} teams (week {week_num})")
+        return df
+
+    except Exception as e:
+        print(f"   ✗ Category stats pull failed: {e}")
         return pd.DataFrame()
 
 def pull_injuries() -> pd.DataFrame:
@@ -446,7 +560,7 @@ def pull_injuries() -> pd.DataFrame:
 
         rows = []
         for t in data.get("transactions", []):
-            type_code = t.get("typeCode", "")
+            type_code   = t.get("typeCode", "")
             description = t.get("description", "").lower()
             is_injury = (
                 type_code == "SC" and (
@@ -471,6 +585,7 @@ def pull_injuries() -> pd.DataFrame:
         print(f"   ✗ Injury pull failed: {e}")
         return pd.DataFrame()
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PART 3 — MERGE & ENRICH
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,22 +596,18 @@ def merge_fantasy_with_mlb(
     batting_df: pd.DataFrame,
     pitching_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Join fantasy player lists with real MLB stats.
-    Returns (enriched_roster, enriched_waiver).
-    """
+    """Join fantasy player lists with real MLB stats."""
     print("🔗 Merging fantasy + MLB data...")
 
-    # Combine batting + pitching into one lookup
-    bat_cols  = ["player_name", "team", "avg", "obp", "slg", "ops", 
-             "wrc_plus", "war_bat", "k_pct", "bb_pct", "hard_hit_pct",
-             "home_runs", "runs", "rbi", "stolen_bases"]
-    pit_cols  = ["player_name", "team", "era", "whip", "k_per_9", 
-             "bb_per_9", "fip", "xfip", "war_pitch", "k_pct", 
-             "bb_pct", "strikeouts", "saves", "wins"]
+    bat_cols = ["player_name", "team", "avg", "obp", "slg", "ops",
+                "wrc_plus", "war_bat", "k_pct", "bb_pct", "hard_hit_pct",
+                "home_runs", "runs", "rbi", "stolen_bases"]
+    pit_cols = ["player_name", "team", "era", "whip", "k_per_9",
+                "bb_per_9", "fip", "xfip", "war_pitch", "k_pct",
+                "bb_pct", "strikeouts", "saves", "wins"]
 
-    bat_slim  = batting_df[[c for c in bat_cols  if c in batting_df.columns]].copy()
-    pit_slim  = pitching_df[[c for c in pit_cols if c in pitching_df.columns]].copy()
+    bat_slim = batting_df[[c for c in bat_cols if c in batting_df.columns]].copy()
+    pit_slim = pitching_df[[c for c in pit_cols if c in pitching_df.columns]].copy()
 
     def enrich(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -513,16 +624,67 @@ def merge_fantasy_with_mlb(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PART 4 — EXPORT TO CSV (Power BI Ready)
+# PART 4 — EXPORT (CSV + Google Sheets)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def export(df: pd.DataFrame, filename: str):
+def export_csv(df: pd.DataFrame, filename: str):
+    """Save DataFrame to local CSV."""
     if df.empty:
         print(f"   ⚠ Skipping {filename} — no data")
         return
     path = os.path.join(OUTPUT_DIR, filename)
     df.to_csv(path, index=False)
-    print(f"   💾 Saved → {path}  ({len(df)} rows)")
+    print(f"   💾 CSV → {path}  ({len(df)} rows)")
+
+
+def export_all(datasets: dict, sheet=None):
+    """
+    Export all datasets to both CSV and Google Sheets.
+    datasets: { "tab_name / filename_stem": dataframe }
+    """
+    # Map: tab name → csv filename
+    file_map = {
+        "mlb_batting_season":   "mlb_batting_season.csv",
+        "mlb_pitching_season":  "mlb_pitching_season.csv",
+        "mlb_batting_recent":   "mlb_batting_recent.csv",
+        "mlb_pitching_recent":  "mlb_pitching_recent.csv",
+        "mlb_schedule":         "mlb_schedule.csv",
+        "mlb_injuries":         "mlb_injuries.csv",
+        "fantasy_roster":       "fantasy_my_roster.csv",
+        "fantasy_roster_stats": "fantasy_roster_stats.csv",
+        "fantasy_team_stats":   "fantasy_team_stats.csv",
+        "fantasy_waiver_wire":  "fantasy_waiver_wire.csv",
+        "fantasy_matchup":      "fantasy_matchup.csv",
+        "fantasy_matchup_cats": "fantasy_matchup_cats.csv",
+
+    }
+
+    print("\n💾 Exporting to CSV + Google Sheets...")
+    for tab_name, df in datasets.items():
+        csv_file = file_map.get(tab_name, f"{tab_name}.csv")
+        export_csv(df, csv_file)
+        if sheet:
+            export_to_sheet(sheet, df, tab_name)
+
+    # Write a metadata tab so the dashboard knows when data was last refreshed
+    if sheet:
+        try:
+            meta_tab = "metadata"
+            try:
+                ws = sheet.worksheet(meta_tab)
+            except gspread.exceptions.WorksheetNotFound:
+                ws = sheet.add_worksheet(title=meta_tab, rows=10, cols=5)
+            ws.clear()
+            ws.update([
+                ["key", "value"],
+                ["last_updated", str(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))],
+                ["season", str(CURRENT_YEAR)],
+                ["date_from", str(DATE_FROM)],
+                ["date_to", str(DATE_TO)],
+            ])
+            print("   ☁️  Sheets → 'metadata' tab updated")
+        except Exception as e:
+            print(f"   ✗ Metadata tab failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -530,7 +692,11 @@ def export(df: pd.DataFrame, filename: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    # ── MLB Stats ─────────────────────────────────────────────────────────────
+    # ── Google Sheets ──────────────────────────────────────────────────────────
+    print("☁️  Connecting to Google Sheets...")
+    sheet = init_sheets()
+
+    # ── MLB Stats ──────────────────────────────────────────────────────────────
     batting_season_2025  = pull_mlb_batting(2025)
     batting_season_2026  = pull_mlb_batting(2026)
     pitching_season_2025 = pull_mlb_pitching(2025)
@@ -538,9 +704,9 @@ def main():
     batting_recent       = pull_recent_batting(DATE_FROM, DATE_TO)
     pitching_recent      = pull_recent_pitching(DATE_FROM, DATE_TO)
     injuries             = pull_injuries()
-    batting_season  = pd.concat([batting_season_2025, batting_season_2026], ignore_index=True)
-    pitching_season = pd.concat([pitching_season_2025, pitching_season_2026], ignore_index=True)
-    schedule        = pull_upcoming_schedule()
+    batting_season       = pd.concat([batting_season_2025, batting_season_2026], ignore_index=True)
+    pitching_season      = pd.concat([pitching_season_2025, pitching_season_2026], ignore_index=True)
+    schedule             = pull_upcoming_schedule()
 
     print()
 
@@ -550,14 +716,16 @@ def main():
     team_stats   = pd.DataFrame()
     waiver_df    = pd.DataFrame()
     matchup_df   = pd.DataFrame()
+    roster_stats = pd.DataFrame()
+    matchup_cats = pull_matchup_category_stats()
+
 
     if yahoo:
         roster_df    = pull_my_roster(yahoo)
-        team_stats  = pull_my_team_stats(yahoo)
+        team_stats   = pull_my_team_stats(yahoo)
         waiver_df    = pull_waiver_wire(yahoo, top_n=75)
         matchup_df   = pull_matchup(yahoo)
         roster_stats = pull_my_roster_stats(yahoo)
-        roster_stats.to_csv(os.path.join(OUTPUT_DIR, "fantasy_roster_stats.csv"), index=False)
 
     print()
 
@@ -568,24 +736,29 @@ def main():
 
     print()
 
-    # ── Export ─────────────────────────────────────────────────────────────────
-    print("💾 Exporting CSVs for Power BI...")
-    export(batting_season,   "mlb_batting_season.csv")
-    export(pitching_season,  "mlb_pitching_season.csv")
-    export(batting_recent,   "mlb_batting_recent.csv")
-    export(pitching_recent,  "mlb_pitching_recent.csv")
-    export(schedule,         "mlb_schedule.csv")
-    export(enriched_roster,  "fantasy_my_roster.csv")
-    export(team_stats,       "fantasy_team_stats.csv")
-    export(enriched_waiver,  "fantasy_waiver_wire.csv")
-    export(matchup_df,       "fantasy_matchup.csv")
-    export(injuries,         "mlb_injuries.csv")
-    export(roster_stats, "fantasy_roster_stats.csv")
+    # ── Export everything ──────────────────────────────────────────────────────
+    datasets = {
+        "mlb_batting_season":   batting_season,
+        "mlb_pitching_season":  pitching_season,
+        "mlb_batting_recent":   batting_recent,
+        "mlb_pitching_recent":  pitching_recent,
+        "mlb_schedule":         schedule,
+        "mlb_injuries":         injuries,
+        "fantasy_roster":       enriched_roster,
+        "fantasy_roster_stats": roster_stats,
+        "fantasy_team_stats":   team_stats,
+        "fantasy_waiver_wire":  enriched_waiver,
+        "fantasy_matchup":      matchup_df,
+        "fantasy_matchup_cats": matchup_cats,
+    }
 
+    export_all(datasets, sheet=sheet)
 
-    print(f"\n✅ All done! Load the CSVs in {OUTPUT_DIR}/ into Power BI.")
-    print(   "   Refresh this script each day (or schedule it with Task Scheduler).")
+    print(f"\n✅ All done!")
+    print(f"   Local CSVs → {OUTPUT_DIR}/")
+    print(f"   Google Sheets → https://docs.google.com/spreadsheets/d/{SHEET_ID}")
     print(f"{'='*60}\n")
+
 
 if __name__ == "__main__":
     main()

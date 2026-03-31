@@ -4,7 +4,7 @@ S&P MLB Fantasy Dashboard — Streamlit App
 Run with: streamlit run dashboard.py
 
 Requirements:
-    pip install streamlit pandas plotly
+    pip install streamlit pandas plotly gspread google-auth anthropic python-dotenv
 """
 
 import streamlit as st
@@ -17,7 +17,17 @@ from datetime import date
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Local CSV fallback (used when Sheets is unavailable)
 DATA_DIR = "/Users/spencerrussell/OneDrive - G&G Outfitters/power_bi_data"
+
+# Google Sheets config — reads from Streamlit secrets when deployed,
+# falls back to local credentials file when running locally
+SHEET_ID   = "1RVPs1V-2T6-XmZEi4AMnbWfo3RyI5ZYKxA0pkbsn5aA"
+CREDS_FILE = "/Users/spencerrussell/mlb_fantasy_dashboard/google_credentials.json"
+SCOPES     = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 st.set_page_config(
     page_title="S&P Analytics",
@@ -34,18 +44,15 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&family=DM+Sans:wght@300;400;500&display=swap');
 
-/* Global */
 html, body, [class*="css"] {
     background-color: #0A0E14;
     color: #E6EDF3;
     font-family: 'DM Sans', sans-serif;
 }
 
-/* Hide Streamlit chrome */
 #MainMenu, footer, header { visibility: hidden; }
 .block-container { padding: 0 2rem 2rem 2rem; max-width: 1400px; }
 
-/* Tabs */
 .stTabs [data-baseweb="tab-list"] {
     background: #0D1117;
     border-bottom: 1px solid rgba(255,161,16,0.2);
@@ -70,10 +77,8 @@ html, body, [class*="css"] {
 }
 .stTabs [data-baseweb="tab-panel"] { padding: 24px 0; }
 
-/* Dataframe */
 .stDataFrame { border: 1px solid rgba(255,255,255,0.07); border-radius: 4px; }
 
-/* Metrics */
 [data-testid="metric-container"] {
     background: #0D1117;
     border: 1px solid rgba(255,255,255,0.07);
@@ -94,13 +99,10 @@ html, body, [class*="css"] {
     color: #FFA110;
 }
 
-/* Select box */
 .stSelectbox label { color: rgba(230,237,243,0.5); font-size: 12px; }
 
-/* Headers */
 h1, h2, h3 { font-family: 'Bebas Neue', cursive; letter-spacing: 2px; color: #FFA110; }
 
-/* Custom panel */
 .panel {
     background: #0D1117;
     border: 1px solid rgba(255,255,255,0.07);
@@ -159,56 +161,12 @@ h1, h2, h3 { font-family: 'Bebas Neue', cursive; letter-spacing: 2px; color: #FF
     color: rgba(230,237,243,0.5);
 }
 
-.cat-win {
-    background: rgba(255,161,16,0.1);
-    border: 1px solid rgba(255,161,16,0.35);
-    border-radius: 3px;
-    padding: 10px 6px;
-    text-align: center;
-}
-
-.cat-loss {
-    background: rgba(255,80,80,0.07);
-    border: 1px solid rgba(255,80,80,0.25);
-    border-radius: 3px;
-    padding: 10px 6px;
-    text-align: center;
-}
-
-.cat-tie {
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 3px;
-    padding: 10px 6px;
-    text-align: center;
-}
-
-.cat-name {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 1px;
-    color: rgba(230,237,243,0.4);
-    margin-bottom: 4px;
-}
-
 .ai-section {
     background: #0D1117;
     border: 1px solid rgba(255,161,16,0.2);
     border-radius: 4px;
     padding: 20px 24px;
     margin-bottom: 16px;
-}
-
-.ai-section-title {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 2px;
-    color: #FFA110;
-    text-transform: uppercase;
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
 }
 
 .topbar {
@@ -221,73 +179,194 @@ h1, h2, h3 { font-family: 'Bebas Neue', cursive; letter-spacing: 2px; color: #FF
     justify-content: space-between;
 }
 
-.pos-badge {
-    display: inline-block;
-    padding: 2px 7px;
-    background: rgba(255,161,16,0.1);
-    border: 1px solid rgba(255,161,16,0.3);
-    border-radius: 2px;
+.data-source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 3px;
     font-family: 'IBM Plex Mono', monospace;
     font-size: 9px;
-    color: #FFA110;
     letter-spacing: 1px;
+    text-transform: uppercase;
 }
 
-.status-il {
-    display: inline-block;
-    padding: 2px 7px;
-    background: rgba(255,80,80,0.1);
-    border: 1px solid rgba(255,80,80,0.3);
-    border-radius: 2px;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    color: rgba(255,100,100,0.9);
+.badge-sheets {
+    background: rgba(52,168,83,0.1);
+    border: 1px solid rgba(52,168,83,0.3);
+    color: rgba(52,168,83,0.9);
+}
+
+.badge-local {
+    background: rgba(255,161,16,0.1);
+    border: 1px solid rgba(255,161,16,0.3);
+    color: rgba(255,161,16,0.9);
 }
 </style>
 """, unsafe_allow_html=True)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA LOADERS
+# GOOGLE SHEETS CONNECTION
 # ─────────────────────────────────────────────────────────────────────────────
 
+@st.cache_resource(ttl=300)
+def get_sheets_client():
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        try:
+            if "gcp_service_account" in st.secrets:
+                creds = Credentials.from_service_account_info(
+                    st.secrets["gcp_service_account"],
+                    scopes=SCOPES,
+                )
+            elif os.path.exists(CREDS_FILE):
+                creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
+            else:
+                return None, "no_creds"
+        except Exception:
+            if os.path.exists(CREDS_FILE):
+                creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
+            else:
+                return None, "no_creds"
+
+        client = gspread.authorize(creds)
+        sheet  = client.open_by_key(SHEET_ID)
+        return sheet, "sheets"
+
+    except Exception as e:
+        return None, f"error: {e}"
+
+
 @st.cache_data(ttl=300)
-def load(filename):
+def load_from_sheets(tab_name: str) -> pd.DataFrame:
+    """Load a tab from Google Sheets as a DataFrame."""
+    sheet, status = get_sheets_client()
+    if sheet is None:
+        return pd.DataFrame(), "local"
+    try:
+        ws   = sheet.worksheet(tab_name)
+        data = ws.get_all_records()
+        df   = pd.DataFrame(data)
+        # Replace empty strings with NaN for numeric columns
+        df = df.replace("", pd.NA)
+        return df, "sheets"
+    except Exception:
+        return pd.DataFrame(), "local"
+
+
+@st.cache_data(ttl=300)
+def load_from_csv(filename: str) -> pd.DataFrame:
+    """Load a local CSV as a DataFrame."""
     path = os.path.join(DATA_DIR, filename)
     if not os.path.exists(path):
         return pd.DataFrame()
     return pd.read_csv(path)
 
+
+def load(tab_name: str, csv_filename: str = None) -> pd.DataFrame:
+    """
+    Smart loader: tries Google Sheets first, falls back to local CSV.
+    tab_name    — name of the Google Sheets worksheet tab
+    csv_filename — local CSV filename (defaults to tab_name + .csv)
+    """
+    if csv_filename is None:
+        csv_filename = f"{tab_name}.csv"
+
+    df, source = load_from_sheets(tab_name)
+
+    if df.empty:
+        df = load_from_csv(csv_filename)
+        return df
+
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_metadata() -> dict:
+    """Load the metadata tab from Sheets to show last updated time."""
+    sheet, _ = get_sheets_client()
+    if sheet is None:
+        return {}
+    try:
+        ws   = sheet.worksheet("metadata")
+        rows = ws.get_all_records()
+        return {r["key"]: r["value"] for r in rows}
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=300)
 def load_insights():
+    """Load claude_insights.json from local disk."""
     path = os.path.join(DATA_DIR, "claude_insights.json")
     if not os.path.exists(path):
         return {}
     with open(path) as f:
         return json.load(f)
 
+
 def snp_roster(df):
     if "fantasy_team_name" in df.columns:
         return df[df["fantasy_team_name"].str.contains("S&P", na=False)]
     return df
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA SOURCE STATUS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_, sheets_status = get_sheets_client()
+using_sheets     = sheets_status == "sheets"
+meta             = load_metadata()
+last_updated     = meta.get("last_updated", "Unknown")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────────────────────────────────────
 
+source_badge = (
+    '<span class="data-source-badge badge-sheets">● Live — Google Sheets</span>'
+    if using_sheets else
+    '<span class="data-source-badge badge-local">● Local CSV</span>'
+)
+
 st.markdown(f"""
 <div class="topbar">
   <div style="display:flex;align-items:center;gap:14px">
-    <div style="width:38px;height:38px;background:#FFA110;transform:rotate(45deg);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-      <span style="transform:rotate(-45deg);font-family:'Bebas Neue',cursive;font-size:13px;color:#0A0E14;letter-spacing:1px">S&P</span>
+    <div style="width:38px;height:38px;background:#FFA110;transform:rotate(45deg);
+                display:flex;align-items:center;justify-content:center;flex-shrink:0">
+      <span style="transform:rotate(-45deg);font-family:'Bebas Neue',cursive;font-size:13px;
+                   color:#0A0E14;letter-spacing:1px">S&P</span>
     </div>
     <div>
-      <div style="font-family:'Bebas Neue',cursive;font-size:22px;letter-spacing:3px;color:#FFA110">S&P Analytics</div>
-      <div style="font-size:10px;color:rgba(230,237,243,0.35);letter-spacing:2px;text-transform:uppercase">MLB Fantasy Dashboard</div>
+      <div style="font-family:'Bebas Neue',cursive;font-size:22px;letter-spacing:3px;color:#FFA110">
+        S&P Analytics
+      </div>
+      <div style="font-size:10px;color:rgba(230,237,243,0.35);letter-spacing:2px;text-transform:uppercase">
+        MLB Fantasy Dashboard
+      </div>
     </div>
   </div>
-  <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:rgba(230,237,243,0.35);letter-spacing:1px">{date.today().strftime('%b %d, %Y').upper()}</div>
+  <div style="display:flex;align-items:center;gap:16px">
+    {source_badge}
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;
+                color:rgba(230,237,243,0.35);letter-spacing:1px">
+      {date.today().strftime('%b %d, %Y').upper()}
+    </div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
+
+if last_updated != "Unknown":
+    st.markdown(f"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;
+                color:rgba(230,237,243,0.2);text-align:right;padding:6px 0 0 0">
+      Data refreshed: {last_updated}
+    </div>
+    """, unsafe_allow_html=True)
 
 st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
@@ -307,16 +386,16 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ═════════════════════════════════════════════════════════════════════════════
 
 with tab1:
-    matchup_df   = load("fantasy_matchup.csv")
-    roster_df    = load("fantasy_my_roster.csv")
-    roster_stats = load("fantasy_roster_stats.csv")
-    injuries_df  = load("mlb_injuries.csv")
+    matchup_df   = load("fantasy_matchup",      "fantasy_matchup.csv")
+    roster_df    = load("fantasy_roster",        "fantasy_my_roster.csv")
+    roster_stats = load("fantasy_roster_stats",  "fantasy_roster_stats.csv")
+    injuries_df  = load("mlb_injuries",          "mlb_injuries.csv")
 
     # ── Scoreboard ────────────────────────────────────────────────────────────
     week_num = matchup_df["week"].iloc[0] if not matchup_df.empty and "week" in matchup_df.columns else "?"
+    my_row = None
+
     if not matchup_df.empty:
-        my_row = None
-        opp_row = None
         for _, row in matchup_df.iterrows():
             t1 = str(row.get("team_1", "")).strip("b'").strip("'")
             t2 = str(row.get("team_2", "")).strip("b'").strip("'")
@@ -355,88 +434,101 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
 
-    # ── Category breakdown ─────────────────────────────────────────────────
-    if not roster_stats.empty and my_row:
-        snp_stats = snp_roster(roster_stats)
-        opp_name = my_row["opp"]
-        opp_stats = roster_stats[roster_stats["fantasy_team_name"].str.contains(opp_name.strip(), na=False, regex=False)]
 
-        cats     = ["Runs", "HR", "RBI", "SB", "AVG", "Wins", "Saves", "K", "ERA", "WHIP"]
-        abbrevs  = ["R",    "HR", "RBI", "SB", "OBP", "W",    "SV",    "K", "ERA", "WHIP"]
-        rate_cats = ["ERA", "WHIP", "AVG"]
+    # ── Category breakdown ─────────────────────────────────────────────────────
+    matchup_cats = load("fantasy_matchup_cats", "fantasy_matchup_cats.csv")
 
-        def get_val(df, cat):
-            if cat not in df.columns:
-                return None
-            return df[cat].mean() if cat in rate_cats else df[cat].sum()
+    if not matchup_cats.empty and my_row:
+        # Coerce numerics
+        cats      = ["Runs", "HR", "RBI", "SB", "OBP", "Wins", "Saves", "K", "ERA", "WHIP"]
+        abbrevs   = ["R",    "HR", "RBI", "SB", "OBP", "W",    "SV",    "K", "ERA", "WHIP"]
 
-        def fmt(val, cat):
-            if val is None or val != val:
-                return "—"
-            return f"{round(val, 2)}" if cat in rate_cats else str(int(val))
+        for cat in cats:
+            if cat in matchup_cats.columns:
+                matchup_cats[cat] = pd.to_numeric(matchup_cats[cat], errors="coerce")
 
-        def snp_wins(cat, snp_val, opp_val):
-            if snp_val is None or opp_val is None:
-                return None
-            if cat in ["ERA", "WHIP"]:
-                return snp_val < opp_val
-            return snp_val > opp_val
+        # Find S&P and opponent rows
+        snp_row = matchup_cats[matchup_cats["fantasy_team_name"].str.contains("S&P", na=False)]
+        opp_row = matchup_cats[matchup_cats["fantasy_team_name"].str.contains(my_row["opp"].strip(), na=False, regex=False)]
 
-        # ── Week number from matchup ───────────────────────────────────────
+        if not snp_row.empty and not opp_row.empty:
+            snp = snp_row.iloc[0]
+            opp = opp_row.iloc[0]
+            
+            # force numeric
+            for cat in cats:
+                try:
+                    snp[cat] = float(snp[cat])
+                except:
+                    snp[cat] = None
+                try:
+                    opp[cat] = float(opp[cat])
+                except:
+                    opp[cat] = None
 
-        # ── Header row ────────────────────────────────────────────────────
-        header_cols = st.columns([1] + [1]*10)
-        with header_cols[0]:
-            st.markdown(f"<div style='font-family:IBM Plex Mono,monospace;font-size:9px;letter-spacing:1px;color:rgba(230,237,243,0.3);padding-top:8px'>WEEK {week_num}</div>", unsafe_allow_html=True)
-        for i, abbr in enumerate(abbrevs):
-            with header_cols[i+1]:
-                st.markdown(f"<div style='font-family:IBM Plex Mono,monospace;font-size:9px;letter-spacing:1px;color:rgba(230,237,243,0.4);text-align:center'>{abbr}</div>", unsafe_allow_html=True)
+            def fmt(val, cat):
+                if val is None or pd.isna(val):
+                    return "—"
+                return f"{val:.2f}" if cat in ["ERA", "WHIP", "OBP"] else str(int(val))
 
-        # ── S&P row ───────────────────────────────────────────────────────
-        snp_cols = st.columns([1] + [1]*10)
-        with snp_cols[0]:
-            st.markdown("<div style='font-family:Bebas Neue,cursive;font-size:16px;color:#FFA110;padding-top:4px'>S&P</div>", unsafe_allow_html=True)
-        for i, (cat, abbr) in enumerate(zip(cats, abbrevs)):
-            snp_val = get_val(snp_stats, cat)
-            opp_val = get_val(opp_stats, cat)
-            win = snp_wins(cat, snp_val, opp_val)
-            if win is True:
-                style = "background:rgba(255,161,16,0.12);border:1px solid rgba(255,161,16,0.4);border-radius:3px;padding:6px 4px;text-align:center"
-                color = "#FFA110"
-                weight = "700"
-            elif win is False:
-                style = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:6px 4px;text-align:center"
-                color = "rgba(230,237,243,0.4)"
-                weight = "400"
-            else:
-                style = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:6px 4px;text-align:center"
-                color = "rgba(230,237,243,0.5)"
-                weight = "400"
-            with snp_cols[i+1]:
-                st.markdown(f"<div style='{style}'><span style='font-family:Bebas Neue,cursive;font-size:18px;color:{color};font-weight:{weight};line-height:1'>{fmt(snp_val, cat)}</span></div>", unsafe_allow_html=True)
+            def snp_wins(cat, sv, ov):
+                if pd.isna(sv) or pd.isna(ov):
+                    return None
+                if sv == ov:
+                    return None  # tied — no highlighting
+                if cat in ["ERA", "WHIP"]:
+                    return sv < ov
+                return sv > ov
 
-        # ── Opponent row ──────────────────────────────────────────────────
-        opp_cols = st.columns([1] + [1]*10)
-        with opp_cols[0]:
-            st.markdown(f"<div style='font-family:Bebas Neue,cursive;font-size:16px;color:rgba(230,237,243,0.5);padding-top:4px'>{opp_name[:8]}</div>", unsafe_allow_html=True)
-        for i, (cat, abbr) in enumerate(zip(cats, abbrevs)):
-            snp_val = get_val(snp_stats, cat)
-            opp_val = get_val(opp_stats, cat)
-            win = snp_wins(cat, snp_val, opp_val)
-            if win is False:
-                style = "background:rgba(255,80,80,0.08);border:1px solid rgba(255,80,80,0.3);border-radius:3px;padding:6px 4px;text-align:center"
-                color = "rgba(255,120,120,0.9)"
-                weight = "700"
-            else:
-                style = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:6px 4px;text-align:center"
-                color = "rgba(230,237,243,0.3)"
-                weight = "400"
-            with opp_cols[i+1]:
-                st.markdown(f"<div style='{style}'><span style='font-family:Bebas Neue,cursive;font-size:18px;color:{color};font-weight:{weight};line-height:1'>{fmt(opp_val, cat)}</span></div>", unsafe_allow_html=True)
+            # header row
+            header_cols = st.columns([1] + [1]*10)
+            with header_cols[0]:
+                st.markdown(f"<div style='font-family:IBM Plex Mono,monospace;font-size:9px;letter-spacing:1px;color:rgba(230,237,243,0.3);padding-top:8px'>WEEK {week_num}</div>", unsafe_allow_html=True)
+            for i, abbr in enumerate(abbrevs):
+                with header_cols[i+1]:
+                    st.markdown(f"<div style='font-family:IBM Plex Mono,monospace;font-size:9px;letter-spacing:1px;color:rgba(230,237,243,0.4);text-align:center'>{abbr}</div>", unsafe_allow_html=True)
+
+            # S&P row
+            snp_cols = st.columns([1] + [1]*10)
+            with snp_cols[0]:
+                st.markdown("<div style='font-family:Bebas Neue,cursive;font-size:16px;color:#FFA110;padding-top:4px'>S&P</div>", unsafe_allow_html=True)
+            for i, cat in enumerate(cats):
+                sv  = snp.get(cat)
+                ov  = opp.get(cat)
+                win = snp_wins(cat, sv, ov)
+                if win is True:
+                    style = "background:rgba(255,161,16,0.12);border:1px solid rgba(255,161,16,0.4);border-radius:3px;padding:6px 4px;text-align:center"
+                    color = "#FFA110"; weight = "700"
+                elif win is False:
+                    style = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:6px 4px;text-align:center"
+                    color = "rgba(230,237,243,0.4)"; weight = "400"
+                else:
+                    style = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:6px 4px;text-align:center"
+                    color = "rgba(230,237,243,0.5)"; weight = "400"
+                with snp_cols[i+1]:
+                    st.markdown(f"<div style='{style}'><span style='font-family:Bebas Neue,cursive;font-size:18px;color:{color};font-weight:{weight};line-height:1'>{fmt(sv, cat)}</span></div>", unsafe_allow_html=True)
+
+            # opponent row
+            opp_name = my_row["opp"]
+            opp_cols = st.columns([1] + [1]*10)
+            with opp_cols[0]:
+                st.markdown(f"<div style='font-family:Bebas Neue,cursive;font-size:16px;color:rgba(230,237,243,0.5);padding-top:4px'>{opp_name[:8]}</div>", unsafe_allow_html=True)
+            for i, cat in enumerate(cats):
+                sv  = snp.get(cat)
+                ov  = opp.get(cat)
+                win = snp_wins(cat, sv, ov)
+                if win is False:
+                    style = "background:rgba(255,80,80,0.08);border:1px solid rgba(255,80,80,0.3);border-radius:3px;padding:6px 4px;text-align:center"
+                    color = "rgba(255,120,120,0.9)"; weight = "700"
+                else:
+                    style = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:6px 4px;text-align:center"
+                    color = "rgba(230,237,243,0.3)"; weight = "400"
+                with opp_cols[i+1]:
+                    st.markdown(f"<div style='{style}'><span style='font-family:Bebas Neue,cursive;font-size:18px;color:{color};font-weight:{weight};line-height:1'>{fmt(ov, cat)}</span></div>", unsafe_allow_html=True)
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
-    # ── Roster + Waiver side by side ──────────────────────────────────────
+    # ── Roster + Waiver ────────────────────────────────────────────────────────
     col_left, col_right = st.columns([3, 2])
 
     with col_left:
@@ -450,14 +542,12 @@ with tab1:
                     "status": "Status", "ops": "OPS",
                     "era": "ERA", "war_bat": "WAR(B)", "war_pitch": "WAR(P)"
                 }),
-                hide_index=True,
-                use_container_width=True,
-                height=420,
+                hide_index=True, use_container_width=True, height=420,
             )
 
     with col_right:
         st.markdown('<div class="panel-title">WAIVER WIRE</div>', unsafe_allow_html=True)
-        waiver_df = load("fantasy_waiver_wire.csv")
+        waiver_df = load("fantasy_waiver_wire", "fantasy_waiver_wire.csv")
         if not waiver_df.empty:
             display_cols = [c for c in ["player_name", "position", "team_x", "ops", "era", "wrc_plus", "stolen_bases", "saves"] if c in waiver_df.columns]
             st.dataframe(
@@ -466,12 +556,10 @@ with tab1:
                     "team_x": "Team", "ops": "OPS", "era": "ERA",
                     "wrc_plus": "wRC+", "stolen_bases": "SB", "saves": "SV"
                 }),
-                hide_index=True,
-                use_container_width=True,
-                height=420,
+                hide_index=True, use_container_width=True, height=420,
             )
 
-    # ── Injury tracker ─────────────────────────────────────────────────────
+    # ── Injury tracker ─────────────────────────────────────────────────────────
     st.markdown('<div class="panel-title" style="margin-top:20px">INJURY TRACKER</div>', unsafe_allow_html=True)
     if not injuries_df.empty:
         snp_names = snp_roster(roster_df)["player_name"].tolist() if not roster_df.empty else []
@@ -482,11 +570,11 @@ with tab1:
                     "player_name": "Player", "transaction_type": "Type",
                     "description": "Description", "date": "Date"
                 }),
-                hide_index=True,
-                use_container_width=True,
+                hide_index=True, use_container_width=True,
             )
         else:
             st.markdown("<p style='color:rgba(230,237,243,0.4);font-size:13px'>No injury records found for S&P roster.</p>", unsafe_allow_html=True)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 2 — LEAGUE OVERVIEW
@@ -494,13 +582,19 @@ with tab1:
 
 with tab2:
     import plotly.express as px
-    import plotly.graph_objects as go
 
-    batting_df  = load("mlb_batting_season.csv")
-    pitching_df = load("mlb_pitching_season.csv")
-    team_stats  = load("fantasy_team_stats.csv")
+    batting_df  = load("mlb_batting_season",  "mlb_batting_season.csv")
+    pitching_df = load("mlb_pitching_season", "mlb_pitching_season.csv")
+    team_stats  = load("fantasy_team_stats",  "fantasy_team_stats.csv")
 
-    # ── KPI row ────────────────────────────────────────────────────────────
+    # Coerce numeric
+    for col in ["ops", "home_runs", "wrc_plus"]:
+        if not batting_df.empty and col in batting_df.columns:
+            batting_df[col] = pd.to_numeric(batting_df[col], errors="coerce")
+    for col in ["era", "whip"]:
+        if not pitching_df.empty and col in pitching_df.columns:
+            pitching_df[col] = pd.to_numeric(pitching_df[col], errors="coerce")
+
     if not batting_df.empty:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -513,10 +607,8 @@ with tab2:
             st.metric("Avg ERA", f"{pitching_df['era'].mean():.2f}" if not pitching_df.empty and "era" in pitching_df.columns else "—")
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-
     col_left, col_right = st.columns(2)
 
-    # ── Top batters chart ──────────────────────────────────────────────────
     with col_left:
         st.markdown('<div class="panel-title">TOP 15 BATTERS BY OPS</div>', unsafe_allow_html=True)
         if not batting_df.empty and "ops" in batting_df.columns:
@@ -527,19 +619,15 @@ with tab2:
                 labels={"ops": "OPS", "player_name": ""},
             )
             fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#E6EDF3", family="IBM Plex Mono", size=11),
-                coloraxis_showscale=False,
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=420,
+                coloraxis_showscale=False, margin=dict(l=0, r=0, t=0, b=0), height=420,
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             )
             fig.update_traces(marker_line_width=0)
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── Top pitchers chart ─────────────────────────────────────────────────
     with col_right:
         st.markdown('<div class="panel-title">TOP 15 PITCHERS BY ERA (min 20 IP)</div>', unsafe_allow_html=True)
         if not pitching_df.empty and "era" in pitching_df.columns:
@@ -550,27 +638,26 @@ with tab2:
                 labels={"era": "ERA", "player_name": ""},
             )
             fig2.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#E6EDF3", family="IBM Plex Mono", size=11),
-                coloraxis_showscale=False,
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=420,
+                coloraxis_showscale=False, margin=dict(l=0, r=0, t=0, b=0), height=420,
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             )
             fig2.update_traces(marker_line_width=0)
             st.plotly_chart(fig2, use_container_width=True)
 
-    # ── League standings ───────────────────────────────────────────────────
     st.markdown('<div class="panel-title" style="margin-top:8px">LEAGUE STANDINGS</div>', unsafe_allow_html=True)
     if not team_stats.empty:
         display_cols = [c for c in ["fantasy_team_name", "wins", "losses", "ties", "points", "standing"] if c in team_stats.columns]
-        styled = team_stats[display_cols].rename(columns={
-            "fantasy_team_name": "Team", "wins": "W", "losses": "L",
-            "ties": "T", "points": "Pts", "standing": "Rank"
-        })
-        st.dataframe(styled, hide_index=True, use_container_width=True)
+        st.dataframe(
+            team_stats[display_cols].rename(columns={
+                "fantasy_team_name": "Team", "wins": "W", "losses": "L",
+                "ties": "T", "points": "Pts", "standing": "Rank"
+            }),
+            hide_index=True, use_container_width=True,
+        )
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3 — AI INSIGHTS
@@ -603,9 +690,9 @@ with tab3:
         """, unsafe_allow_html=True)
 
         sections = [
-            ("📋  WEEKLY SUMMARY", "weekly_summary"),
+            ("📋  WEEKLY SUMMARY",             "weekly_summary"),
             ("⚾  START / SIT RECOMMENDATIONS", "starters"),
-            ("📡  WAIVER WIRE", "waiver_wire"),
+            ("📡  WAIVER WIRE",                 "waiver_wire"),
         ]
 
         for title, key in sections:
@@ -619,7 +706,6 @@ with tab3:
                     </div>
                     """, unsafe_allow_html=True)
 
-        # Trade analysis (existing)
         trade = insights.get("trade_analysis", {})
         if trade and "analysis" in trade:
             with st.expander("🔄  TRADE ANALYSIS", expanded=False):
@@ -640,41 +726,41 @@ with tab3:
                 </div>
                 """, unsafe_allow_html=True)
 
-        # ── Live Trade Analyzer (NEW - add this after) ────────────────────
-        st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-        st.markdown('<div class="panel-title">TRADE ANALYZER</div>', unsafe_allow_html=True)
+    # ── Live Trade Analyzer ────────────────────────────────────────────────────
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="panel-title">LIVE TRADE ANALYZER</div>', unsafe_allow_html=True)
 
-        col_give, col_receive = st.columns(2)
-        with col_give:
-            trade_give = st.text_input(
-                "I GIVE",
-                placeholder="e.g. Elly De La Cruz",
-                key="trade_give"
-            )
-        with col_receive:
-            trade_receive = st.text_input(
-                "I RECEIVE",
-                placeholder="e.g. Spencer Strider + Pete Fairbanks",
-                key="trade_receive"
-            )
+    col_give, col_receive = st.columns(2)
+    with col_give:
+        trade_give = st.text_input("I GIVE", placeholder="e.g. Elly De La Cruz", key="trade_give")
+    with col_receive:
+        trade_receive = st.text_input("I RECEIVE", placeholder="e.g. Spencer Strider + Pete Fairbanks", key="trade_receive")
 
-        if st.button("⚾ Analyze Trade", type="primary"):
-            if trade_give and trade_receive:
-                with st.spinner("Asking Claude..."):
-                    try:
-                        import anthropic
-                        from dotenv import load_dotenv
-                        load_dotenv("/Users/spencerrussell/mlb_fantasy_dashboard/.env")
+    if st.button("⚾ Analyze Trade", type="primary"):
+        if trade_give and trade_receive:
+            with st.spinner("Asking Claude..."):
+                try:
+                    import anthropic
+                    from dotenv import load_dotenv
+                    load_dotenv("/Users/spencerrussell/mlb_fantasy_dashboard/.env")
 
-                        roster   = pd.read_csv(os.path.join(DATA_DIR, "fantasy_my_roster.csv"))
-                        batting  = pd.read_csv(os.path.join(DATA_DIR, "mlb_batting_season.csv"))
-                        pitching = pd.read_csv(os.path.join(DATA_DIR, "mlb_pitching_season.csv"))
-                        r_stats  = pd.read_csv(os.path.join(DATA_DIR, "fantasy_roster_stats.csv"))
+                    roster_raw   = load("fantasy_roster",       "fantasy_my_roster.csv")
+                    batting_raw  = load("mlb_batting_season",   "mlb_batting_season.csv")
+                    pitching_raw = load("mlb_pitching_season",  "mlb_pitching_season.csv")
+                    r_stats_raw  = load("fantasy_roster_stats", "fantasy_roster_stats.csv")
 
-                        snp = roster[roster["fantasy_team_name"].str.contains("S&P", na=False)]
-                        snp_stats = r_stats[r_stats["fantasy_team_name"].str.contains("S&P", na=False)]
+                    # Coerce numerics
+                    for col in ["ops", "home_runs", "wrc_plus"]:
+                        if col in batting_raw.columns:
+                            batting_raw[col] = pd.to_numeric(batting_raw[col], errors="coerce")
+                    for col in ["era", "whip"]:
+                        if col in pitching_raw.columns:
+                            pitching_raw[col] = pd.to_numeric(pitching_raw[col], errors="coerce")
 
-                        prompt = f"""
+                    snp      = snp_roster(roster_raw)
+                    snp_stats = snp_roster(r_stats_raw)
+
+                    prompt = f"""
 Today is {date.today()}. Analyze this potential trade for my fantasy team S&P:
 
 MY TEAM GIVES: {trade_give}
@@ -687,10 +773,10 @@ MY CURRENT WEEKLY CATEGORY STANDINGS:
 {snp_stats.head(30).to_string(index=False)}
 
 SEASON BATTING STATS (top 50):
-{batting.head(50).to_string(index=False)}
+{batting_raw.head(50).to_string(index=False)}
 
 SEASON PITCHING STATS (top 50):
-{pitching.head(50).to_string(index=False)}
+{pitching_raw.head(50).to_string(index=False)}
 
 Remember this is a 10-category H2H league (R, HR, RBI, SB, OBP, W, SV, K, ERA, WHIP).
 
@@ -700,37 +786,40 @@ Remember this is a 10-category H2H league (R, HR, RBI, SB, OBP, W, SV, K, ERA, W
 4. COUNTER OFFER — if declining, what would make this trade fair?
 5. LONG TERM VIEW — does this help me for the playoffs (top 6 qualify, weeks 24-26)?
 """
-
-                        system = """You are an elite fantasy baseball analyst managing S&P in a 12-team H2H Categories league.
+                    system = """You are an elite fantasy baseball analyst managing S&P in a 12-team H2H Categories league.
 Scoring categories: R, HR, RBI, SB, OBP (hitting) and W, SV, K, ERA, WHIP (pitching).
 Be direct, back every recommendation with stats, never make up numbers not in the data."""
 
-                        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                        message = client.messages.create(
-                            model="claude-sonnet-4-6",
-                            max_tokens=1500,
-                            system=system,
-                            messages=[{"role": "user", "content": prompt}],
-                        )
-                        result = message.content[0].text
+                    api_key = os.getenv("ANTHROPIC_API_KEY")
+                    if not api_key and "anthropic" in st.secrets:
+                        api_key = st.secrets["anthropic"]["api_key"]
 
-                        st.markdown(f"""
-                        <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);
-                                    border-radius:4px;padding:24px;margin-top:16px'>
-                          <div style='font-family:IBM Plex Mono,monospace;font-size:10px;
-                                      letter-spacing:2px;color:rgba(255,161,16,0.7);margin-bottom:16px'>
-                            ● TRADE ANALYSIS — {trade_give.upper()} FOR {trade_receive.upper()}
-                          </div>
-                          <div style='font-size:13px;line-height:1.8;color:rgba(230,237,243,0.8)'>
-                            {result.replace(chr(10), '<br>')}
-                          </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    client  = anthropic.Anthropic(api_key=api_key)
+                    message = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=1500,
+                        system=system,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    result = message.content[0].text
 
-                    except Exception as e:
-                        st.error(f"Analysis failed: {e}")
-            else:
-                st.warning("Enter both sides of the trade first.")
+                    st.markdown(f"""
+                    <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);
+                                border-radius:4px;padding:24px;margin-top:16px'>
+                      <div style='font-family:IBM Plex Mono,monospace;font-size:10px;
+                                  letter-spacing:2px;color:rgba(255,161,16,0.7);margin-bottom:16px'>
+                        ● TRADE ANALYSIS — {trade_give.upper()} FOR {trade_receive.upper()}
+                      </div>
+                      <div style='font-size:13px;line-height:1.8;color:rgba(230,237,243,0.8)'>
+                        {result.replace(chr(10), '<br>')}
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
+        else:
+            st.warning("Enter both sides of the trade first.")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -738,12 +827,19 @@ Be direct, back every recommendation with stats, never make up numbers not in th
 # ═════════════════════════════════════════════════════════════════════════════
 
 with tab4:
-    batting_df  = load("mlb_batting_season.csv")
-    pitching_df = load("mlb_pitching_season.csv")
-    injuries_df = load("mlb_injuries.csv")
-    schedule_df = load("mlb_schedule.csv")
+    batting_df  = load("mlb_batting_season",  "mlb_batting_season.csv")
+    pitching_df = load("mlb_pitching_season", "mlb_pitching_season.csv")
+    injuries_df = load("mlb_injuries",        "mlb_injuries.csv")
+    schedule_df = load("mlb_schedule",        "mlb_schedule.csv")
 
-    # Player search
+    # Coerce numerics
+    for col in ["ops", "home_runs", "wrc_plus"]:
+        if not batting_df.empty and col in batting_df.columns:
+            batting_df[col] = pd.to_numeric(batting_df[col], errors="coerce")
+    for col in ["era", "whip"]:
+        if not pitching_df.empty and col in pitching_df.columns:
+            pitching_df[col] = pd.to_numeric(pitching_df[col], errors="coerce")
+
     all_players = []
     if not batting_df.empty and "player_name" in batting_df.columns:
         all_players += batting_df["player_name"].dropna().tolist()
@@ -768,7 +864,6 @@ with tab4:
 
         col1, col2 = st.columns(2)
 
-        # Batting stats
         with col1:
             bat_row = batting_df[batting_df["player_name"] == selected] if not batting_df.empty else pd.DataFrame()
             if not bat_row.empty:
@@ -778,7 +873,6 @@ with tab4:
                 bat_display = bat_display[~bat_display["Stat"].isin(["player_name", "season", "stat_type"])]
                 st.dataframe(bat_display, hide_index=True, use_container_width=True)
 
-        # Pitching stats
         with col2:
             pit_row = pitching_df[pitching_df["player_name"] == selected] if not pitching_df.empty else pd.DataFrame()
             if not pit_row.empty:
@@ -791,7 +885,6 @@ with tab4:
         if bat_row.empty and pit_row.empty:
             st.markdown("<p style='color:rgba(230,237,243,0.4)'>No stats found for this player.</p>", unsafe_allow_html=True)
 
-        # Injury history
         st.markdown('<div class="panel-title" style="margin-top:20px">INJURY HISTORY</div>', unsafe_allow_html=True)
         if not injuries_df.empty:
             player_il = injuries_df[injuries_df["player_name"] == selected]
@@ -800,15 +893,13 @@ with tab4:
                     player_il[["transaction_type", "description", "date"]].rename(columns={
                         "transaction_type": "Type", "description": "Description", "date": "Date"
                     }),
-                    hide_index=True, use_container_width=True
+                    hide_index=True, use_container_width=True,
                 )
             else:
                 st.markdown("<p style='color:rgba(230,237,243,0.4);font-size:13px'>No injury records found.</p>", unsafe_allow_html=True)
 
-        # Upcoming schedule
         st.markdown('<div class="panel-title" style="margin-top:20px">UPCOMING SCHEDULE</div>', unsafe_allow_html=True)
         if not schedule_df.empty:
-            # Find player team from batting or pitching data
             player_team = None
             if not bat_row.empty and "team" in bat_row.columns:
                 player_team = bat_row["team"].iloc[0]
@@ -816,13 +907,11 @@ with tab4:
                 player_team = pit_row["team"].iloc[0]
 
             if player_team:
-                # Match by team for position players
                 player_games = schedule_df[
                     (schedule_df["away_team"].str.contains(str(player_team), na=False, case=False)) |
                     (schedule_df["home_team"].str.contains(str(player_team), na=False, case=False))
                 ]
             else:
-                # Fall back to pitcher matching
                 player_games = schedule_df[
                     (schedule_df.get("away_pitcher", pd.Series()) == selected) |
                     (schedule_df.get("home_pitcher", pd.Series()) == selected)
@@ -835,7 +924,7 @@ with tab4:
                         "away_pitcher": "Away SP", "home_pitcher": "Home SP",
                         "venue": "Venue", "status": "Status"
                     }),
-                    hide_index=True, use_container_width=True
+                    hide_index=True, use_container_width=True,
                 )
             else:
                 st.markdown("<p style='color:rgba(230,237,243,0.4);font-size:13px'>No upcoming games found.</p>", unsafe_allow_html=True)
@@ -850,4 +939,3 @@ with tab4:
           </div>
         </div>
         """, unsafe_allow_html=True)
-
