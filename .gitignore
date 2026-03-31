@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .DS_Store
 power_bi_data/
+google_credentials.json
