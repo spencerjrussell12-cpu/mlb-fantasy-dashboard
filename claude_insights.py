@@ -20,6 +20,9 @@ import anthropic
 import pandas as pd
 from datetime import date
 from dotenv import load_dotenv
+import gspread
+from google.oauth2.service_account import Credentials
+from pathlib import Path
 
 load_dotenv()
 
@@ -64,6 +67,41 @@ def ask_claude(system: str, user: str, max_tokens: int = 1500) -> str:
         messages=[{"role": "user", "content": user}],
     )
     return message.content[0].text
+
+def export_insights_to_sheets(insights: dict):
+    """Write claude insights to Google Sheets."""
+    print("☁️  Exporting insights to Google Sheets...")
+    try:
+        SHEET_ID   = "1RVPs1V-2T6-XmZEi4AMnbWfo3RyI5ZYKxA0pkbsn5aA"
+        CREDS_FILE = "/Users/spencerrussell/mlb_fantasy_dashboard/google_credentials.json"
+        SCOPES     = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+
+        creds  = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        sheet  = client.open_by_key(SHEET_ID)
+
+        try:
+            ws = sheet.worksheet("claude_insights")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sheet.add_worksheet(title="claude_insights", rows=50, cols=2)
+
+        ws.clear()
+        ws.update([
+            ["key", "value"],
+            ["generated_at",   insights.get("generated_at", "")],
+            ["weekly_summary", insights.get("weekly_summary", "")],
+            ["starters",       insights.get("starters", "")],
+            ["waiver_wire",    insights.get("waiver_wire", "")],
+            ["trade_give",     insights.get("trade_analysis", {}).get("give", "")],
+            ["trade_receive",  insights.get("trade_analysis", {}).get("receive", "")],
+            ["trade_analysis", insights.get("trade_analysis", {}).get("analysis", "")],
+        ])
+        print("   ✓ Insights exported to Google Sheets → 'claude_insights' tab")
+    except Exception as e:
+        print(f"   ✗ Sheets export failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

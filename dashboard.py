@@ -300,7 +300,28 @@ def load_metadata() -> dict:
 
 @st.cache_data(ttl=300)
 def load_insights():
-    """Load claude_insights.json from local disk."""
+    """Load claude insights from Google Sheets, fallback to local JSON."""
+    sheet, _ = get_sheets_client()
+    if sheet:
+        try:
+            ws   = sheet.worksheet("claude_insights")
+            rows = ws.get_all_records()
+            data = {r["key"]: r["value"] for r in rows}
+            return {
+                "generated_at":  data.get("generated_at", ""),
+                "weekly_summary": data.get("weekly_summary", ""),
+                "starters":      data.get("starters", ""),
+                "waiver_wire":   data.get("waiver_wire", ""),
+                "trade_analysis": {
+                    "give":     data.get("trade_give", ""),
+                    "receive":  data.get("trade_receive", ""),
+                    "analysis": data.get("trade_analysis", ""),
+                },
+            }
+        except Exception:
+            pass
+
+    # fallback to local JSON
     path = os.path.join(DATA_DIR, "claude_insights.json")
     if not os.path.exists(path):
         return {}
