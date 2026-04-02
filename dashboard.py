@@ -158,7 +158,7 @@ h1, h2, h3 { font-family: 'Bebas Neue', cursive; letter-spacing: 2px; color: #FF
     font-family: 'Bebas Neue', cursive;
     font-size: 28px;
     letter-spacing: 3px;
-    color: rgba(230,237,243,0.5);
+    color: rgba(230,237,243,0.85);
 }
 
 .ai-section {
@@ -384,7 +384,7 @@ st.markdown(f"""
 if last_updated != "Unknown":
     st.markdown(f"""
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;
-                color:rgba(230,237,243,0.2);text-align:right;padding:6px 0 0 0">
+                color:rgba(230,237,243,0.7);text-align:right;padding:6px 0 0 0">
       Data refreshed: {last_updated}
     </div>
     """, unsafe_allow_html=True)
@@ -443,9 +443,9 @@ with tab1:
                 </div>
                 <div style="text-align:center;padding-bottom:12px">
                   <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;
-                              color:rgba(230,237,243,0.3);letter-spacing:2px;margin-bottom:8px">{outlook}</div>
+                              color:rgba(230,237,243,0.7);letter-spacing:2px;margin-bottom:8px">{outlook}</div>
                   <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;
-                              color:rgba(230,237,243,0.2);letter-spacing:3px">VS</div>
+                              color:rgba(230,237,243,0.7);letter-spacing:3px">VS</div>
                 </div>
                 <div style="text-align:right">
                   <div class="team-label-opp">{my_row['opp']}</div>
@@ -455,12 +455,10 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
 
-
     # ── Category breakdown ─────────────────────────────────────────────────────
     matchup_cats = load("fantasy_matchup_cats", "fantasy_matchup_cats.csv")
 
     if not matchup_cats.empty and my_row:
-        # Coerce numerics
         cats      = ["Runs", "HR", "RBI", "SB", "OBP", "Wins", "Saves", "K", "ERA", "WHIP"]
         abbrevs   = ["R",    "HR", "RBI", "SB", "OBP", "W",    "SV",    "K", "ERA", "WHIP"]
 
@@ -468,15 +466,13 @@ with tab1:
             if cat in matchup_cats.columns:
                 matchup_cats[cat] = pd.to_numeric(matchup_cats[cat], errors="coerce")
 
-        # Find S&P and opponent rows
         snp_row = matchup_cats[matchup_cats["fantasy_team_name"].str.contains("S&P", na=False)]
         opp_row = matchup_cats[matchup_cats["fantasy_team_name"].str.contains(my_row["opp"].strip(), na=False, regex=False)]
 
         if not snp_row.empty and not opp_row.empty:
             snp = snp_row.iloc[0]
             opp = opp_row.iloc[0]
-            
-            # force numeric
+
             for cat in cats:
                 try:
                     snp[cat] = float(snp[cat])
@@ -496,12 +492,11 @@ with tab1:
                 if pd.isna(sv) or pd.isna(ov):
                     return None
                 if sv == ov:
-                    return None  # tied — no highlighting
+                    return None
                 if cat in ["ERA", "WHIP"]:
                     return sv < ov
                 return sv > ov
 
-            # header row
             header_cols = st.columns([1] + [1]*10)
             with header_cols[0]:
                 st.markdown(f"<div style='font-family:IBM Plex Mono,monospace;font-size:9px;letter-spacing:1px;color:rgba(230,237,243,0.3);padding-top:8px'>WEEK {week_num}</div>", unsafe_allow_html=True)
@@ -509,7 +504,6 @@ with tab1:
                 with header_cols[i+1]:
                     st.markdown(f"<div style='font-family:IBM Plex Mono,monospace;font-size:9px;letter-spacing:1px;color:rgba(230,237,243,0.4);text-align:center'>{abbr}</div>", unsafe_allow_html=True)
 
-            # S&P row
             snp_cols = st.columns([1] + [1]*10)
             with snp_cols[0]:
                 st.markdown("<div style='font-family:Bebas Neue,cursive;font-size:16px;color:#FFA110;padding-top:4px'>S&P</div>", unsafe_allow_html=True)
@@ -529,7 +523,6 @@ with tab1:
                 with snp_cols[i+1]:
                     st.markdown(f"<div style='{style}'><span style='font-family:Bebas Neue,cursive;font-size:18px;color:{color};font-weight:{weight};line-height:1'>{fmt(sv, cat)}</span></div>", unsafe_allow_html=True)
 
-            # opponent row
             opp_name = my_row["opp"]
             opp_cols = st.columns([1] + [1]*10)
             with opp_cols[0]:
@@ -567,17 +560,130 @@ with tab1:
             )
 
     with col_right:
-        st.markdown('<div class="panel-title">WAIVER WIRE</div>', unsafe_allow_html=True)
-        waiver_df = load("fantasy_waiver_wire", "fantasy_waiver_wire.csv")
+        st.markdown('<div class="panel-title">WAIVER WIRE — URGENCY SCORES</div>', unsafe_allow_html=True)
+        waiver_df   = load("fantasy_waiver_wire", "fantasy_waiver_wire.csv")
+        schedule_df = load("mlb_schedule", "mlb_schedule.csv")
+
         if not waiver_df.empty:
-            display_cols = [c for c in ["player_name", "position", "team_x", "ops", "era", "wrc_plus", "stolen_bases", "saves"] if c in waiver_df.columns]
-            st.dataframe(
-                waiver_df[display_cols].rename(columns={
-                    "player_name": "Player", "position": "Pos",
-                    "team_x": "Team", "ops": "OPS", "era": "ERA",
-                    "wrc_plus": "wRC+", "stolen_bases": "SB", "saves": "SV"
-                }),
-                hide_index=True, use_container_width=True, height=420,
+            for col in ["ops", "era", "wrc_plus", "stolen_bases", "saves"]:
+                if col in waiver_df.columns:
+                    waiver_df[col] = pd.to_numeric(waiver_df[col], errors="coerce")
+
+            snp_for_needs  = snp_roster(roster_df) if not roster_df.empty else pd.DataFrame()
+            snp_active     = snp_for_needs[~snp_for_needs["status"].astype(str).str.contains("IL", na=False)] if not snp_for_needs.empty else pd.DataFrame()
+
+            position_counts = {}
+            if not snp_active.empty and "position" in snp_active.columns:
+                for _, r in snp_active.iterrows():
+                    for pos in str(r["position"]).split(","):
+                        pos = pos.strip()
+                        position_counts[pos] = position_counts.get(pos, 0) + 1
+
+            need_positions = {p for p, c in position_counts.items() if c <= 1}
+
+            team_games = {}
+            if not schedule_df.empty:
+                for _, g in schedule_df.iterrows():
+                    for t in [g.get("away_team", ""), g.get("home_team", "")]:
+                        if t:
+                            team_games[t] = team_games.get(t, 0) + 1
+
+            def score_player(row):
+                score  = 0
+                reason = []
+
+                team  = str(row.get("team_x", row.get("team", "")))
+                games = 0
+                for t, g in team_games.items():
+                    if team and team.lower() in t.lower():
+                        games = g
+                        break
+                score += min(int((games / 7) * 20), 20)
+                if games >= 6:
+                    reason.append(f"{games} games")
+
+                pos  = str(row.get("position", ""))
+                ops  = pd.to_numeric(row.get("ops"),          errors="coerce")
+                wrc  = pd.to_numeric(row.get("wrc_plus"),     errors="coerce")
+                sb   = pd.to_numeric(row.get("stolen_bases"), errors="coerce")
+                era  = pd.to_numeric(row.get("era"),          errors="coerce")
+                saves = pd.to_numeric(row.get("saves"),       errors="coerce")
+
+                if pd.notna(ops) and ops > 0:
+                    score += min(int((ops / 1.2) * 15), 15)
+                    if ops >= 0.800:
+                        reason.append(f".{int(ops*1000)} OPS")
+
+                if pd.notna(wrc) and wrc > 0:
+                    score += min(int((wrc / 160) * 7), 7)
+                    if wrc >= 120:
+                        reason.append(f"{int(wrc)} wRC+")
+
+                if pd.notna(sb) and sb > 5:
+                    score += min(int((sb / 40) * 8), 8)
+                    if sb >= 15:
+                        reason.append(f"{int(sb)} SB")
+
+                if pd.notna(era) and era > 0 and any(p in pos for p in ["SP", "RP", "P"]):
+                    score += min(int(max(0, (4.5 - era) / 4.5) * 15), 15)
+                    if era <= 3.50:
+                        reason.append(f"{era:.2f} ERA")
+
+                if pd.notna(saves) and saves > 0:
+                    score += min(int((saves / 40) * 15), 15)
+                    if saves >= 10:
+                        reason.append(f"{int(saves)} SV")
+
+                for p in pos.split(","):
+                    p = p.strip()
+                    if p in need_positions:
+                        score += 30
+                        reason.append(f"fills {p} need")
+                        break
+
+                return min(score, 100), (" · ".join(reason) if reason else "depth")
+
+            waiver_df[["score", "reason"]] = waiver_df.apply(
+                lambda r: pd.Series(score_player(r)), axis=1
+            )
+            waiver_df = waiver_df.sort_values("score", ascending=False).head(20)
+
+            scroll_html = ""
+            for _, row in waiver_df.iterrows():
+                score  = int(row["score"])
+                name   = row.get("player_name", "")
+                pos    = row.get("position", "")
+                team   = str(row.get("team_x", row.get("team", "")))
+                reason = row.get("reason", "")
+
+                if score >= 70:
+                    bar_color    = "#FFA110"
+                    badge_bg     = "rgba(255,161,16,0.15)"
+                    badge_border = "rgba(255,161,16,0.4)"
+                elif score >= 45:
+                    bar_color    = "rgba(52,168,83,0.8)"
+                    badge_bg     = "rgba(52,168,83,0.1)"
+                    badge_border = "rgba(52,168,83,0.3)"
+                else:
+                    bar_color    = "rgba(230,237,243,0.2)"
+                    badge_bg     = "rgba(255,255,255,0.03)"
+                    badge_border = "rgba(255,255,255,0.1)"
+
+                scroll_html += f"""
+<div style="background:{badge_bg};border:1px solid {badge_border};border-radius:4px;padding:10px 14px;margin-bottom:6px">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+<div><span style="font-family:'DM Sans',sans-serif;font-size:13px;color:#E6EDF3;font-weight:500">{name}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:rgba(230,237,243,0.4);margin-left:8px">{pos} · {team}</span></div>
+<span style="font-family:'Bebas Neue',cursive;font-size:22px;color:{bar_color};letter-spacing:1px">{score}</span>
+</div>
+<div style="background:rgba(255,255,255,0.06);border-radius:2px;height:3px;margin-bottom:6px">
+<div style="background:{bar_color};width:{score}%;height:3px;border-radius:2px"></div>
+</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:rgba(230,237,243,0.4);letter-spacing:0.5px">{reason}</div>
+</div>"""
+
+            st.markdown(
+                f'<div style="height:420px;overflow-y:auto;padding-right:4px">{scroll_html}</div>',
+                unsafe_allow_html=True
             )
 
     # ── Injury tracker ─────────────────────────────────────────────────────────
@@ -595,8 +701,7 @@ with tab1:
             )
         else:
             st.markdown("<p style='color:rgba(230,237,243,0.4);font-size:13px'>No injury records found for S&P roster.</p>", unsafe_allow_html=True)
-
-
+            
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 2 — LEAGUE OVERVIEW
 # ═════════════════════════════════════════════════════════════════════════════
@@ -689,7 +794,7 @@ with tab3:
 
     if not insights:
         st.markdown("""
-        <div style='text-align:center;padding:60px;color:rgba(230,237,243,0.3)'>
+        <div style='text-align:center;padding:60px;color:rgba(230,237,243,0.7)'>
             <div style='font-family:Bebas Neue,cursive;font-size:32px;color:rgba(255,161,16,0.4);margin-bottom:12px'>
                 No Insights Yet
             </div>
