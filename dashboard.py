@@ -202,6 +202,50 @@ h1, h2, h3 { font-family: 'Bebas Neue', cursive; letter-spacing: 2px; color: #FF
     border: 1px solid rgba(255,161,16,0.3);
     color: rgba(255,161,16,0.9);
 }
+
+/* ── Chat bubbles (Tab 5) ─────────────────────────────── */
+.chat-wrap {
+    max-height: 520px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 4px 2px 16px 2px;
+}
+
+.bubble-user {
+    align-self: flex-end;
+    background: rgba(255,161,16,0.12);
+    border: 1px solid rgba(255,161,16,0.3);
+    border-radius: 12px 12px 2px 12px;
+    padding: 12px 16px;
+    max-width: 78%;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: #E6EDF3;
+    line-height: 1.6;
+}
+
+.bubble-assistant {
+    align-self: flex-start;
+    background: #0D1117;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px 12px 12px 2px;
+    padding: 14px 18px;
+    max-width: 88%;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: rgba(230,237,243,0.85);
+    line-height: 1.75;
+}
+
+.bubble-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -250,7 +294,6 @@ def load_from_sheets(tab_name: str) -> pd.DataFrame:
         ws   = sheet.worksheet(tab_name)
         data = ws.get_all_records()
         df   = pd.DataFrame(data)
-        # Replace empty strings with NaN for numeric columns
         df = df.replace("", pd.NA)
         return df, "sheets"
     except Exception:
@@ -267,26 +310,17 @@ def load_from_csv(filename: str) -> pd.DataFrame:
 
 
 def load(tab_name: str, csv_filename: str = None) -> pd.DataFrame:
-    """
-    Smart loader: tries Google Sheets first, falls back to local CSV.
-    tab_name    — name of the Google Sheets worksheet tab
-    csv_filename — local CSV filename (defaults to tab_name + .csv)
-    """
     if csv_filename is None:
         csv_filename = f"{tab_name}.csv"
-
     df, source = load_from_sheets(tab_name)
-
     if df.empty:
         df = load_from_csv(csv_filename)
         return df
-
     return df
 
 
 @st.cache_data(ttl=300)
 def load_metadata() -> dict:
-    """Load the metadata tab from Sheets to show last updated time."""
     sheet, _ = get_sheets_client()
     if sheet is None:
         return {}
@@ -300,7 +334,6 @@ def load_metadata() -> dict:
 
 @st.cache_data(ttl=300)
 def load_insights():
-    """Load claude insights from Google Sheets, fallback to local JSON."""
     sheet, _ = get_sheets_client()
     if sheet:
         try:
@@ -321,7 +354,6 @@ def load_insights():
         except Exception:
             pass
 
-    # fallback to local JSON
     path = os.path.join(DATA_DIR, "claude_insights.json")
     if not os.path.exists(path):
         return {}
@@ -333,6 +365,19 @@ def snp_roster(df):
     if "fantasy_team_name" in df.columns:
         return df[df["fantasy_team_name"].str.contains("S&P", na=False)]
     return df
+
+
+def get_anthropic_key():
+    """Get Anthropic API key from env or Streamlit secrets."""
+    from dotenv import load_dotenv
+    load_dotenv("/Users/spencerrussell/mlb_fantasy_dashboard/.env")
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        try:
+            key = st.secrets["anthropic"]["api_key"]
+        except Exception:
+            pass
+    return key
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,11 +440,12 @@ st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "⚾  Fantasy Hub",
     "📊  League Overview",
     "🤖  AI Insights",
     "🔍  Player Deep Dive",
+    "💬  Roster Q&A",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -701,7 +747,7 @@ with tab1:
             )
         else:
             st.markdown("<p style='color:rgba(230,237,243,0.4);font-size:13px'>No injury records found for S&P roster.</p>", unsafe_allow_html=True)
-            
+
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 2 — LEAGUE OVERVIEW
 # ═════════════════════════════════════════════════════════════════════════════
@@ -713,7 +759,6 @@ with tab2:
     pitching_df = load("mlb_pitching_season", "mlb_pitching_season.csv")
     team_stats  = load("fantasy_team_stats",  "fantasy_team_stats.csv")
 
-    # Coerce numeric
     for col in ["ops", "home_runs", "wrc_plus"]:
         if not batting_df.empty and col in batting_df.columns:
             batting_df[col] = pd.to_numeric(batting_df[col], errors="coerce")
@@ -867,15 +912,12 @@ with tab3:
             with st.spinner("Asking Claude..."):
                 try:
                     import anthropic
-                    from dotenv import load_dotenv
-                    load_dotenv("/Users/spencerrussell/mlb_fantasy_dashboard/.env")
 
                     roster_raw   = load("fantasy_roster",       "fantasy_my_roster.csv")
                     batting_raw  = load("mlb_batting_season",   "mlb_batting_season.csv")
                     pitching_raw = load("mlb_pitching_season",  "mlb_pitching_season.csv")
                     r_stats_raw  = load("fantasy_roster_stats", "fantasy_roster_stats.csv")
 
-                    # Coerce numerics
                     for col in ["ops", "home_runs", "wrc_plus"]:
                         if col in batting_raw.columns:
                             batting_raw[col] = pd.to_numeric(batting_raw[col], errors="coerce")
@@ -916,10 +958,7 @@ Remember this is a 10-category H2H league (R, HR, RBI, SB, OBP, W, SV, K, ERA, W
 Scoring categories: R, HR, RBI, SB, OBP (hitting) and W, SV, K, ERA, WHIP (pitching).
 Be direct, back every recommendation with stats, never make up numbers not in the data."""
 
-                    api_key = os.getenv("ANTHROPIC_API_KEY")
-                    if not api_key and "anthropic" in st.secrets:
-                        api_key = st.secrets["anthropic"]["api_key"]
-
+                    api_key = get_anthropic_key()
                     client  = anthropic.Anthropic(api_key=api_key)
                     message = client.messages.create(
                         model="claude-sonnet-4-6",
@@ -958,7 +997,6 @@ with tab4:
     injuries_df = load("mlb_injuries",        "mlb_injuries.csv")
     schedule_df = load("mlb_schedule",        "mlb_schedule.csv")
 
-    # Coerce numerics
     for col in ["ops", "home_runs", "wrc_plus"]:
         if not batting_df.empty and col in batting_df.columns:
             batting_df[col] = pd.to_numeric(batting_df[col], errors="coerce")
@@ -1065,3 +1103,183 @@ with tab4:
           </div>
         </div>
         """, unsafe_allow_html=True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 5 — ROSTER Q&A
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab5:
+
+    # ── Session state ────────────────────────────────────────────────────────
+    if "qa_messages" not in st.session_state:
+        st.session_state.qa_messages = []
+
+    # ── Load context data ────────────────────────────────────────────────────
+    qa_roster_df    = load("fantasy_roster",        "fantasy_my_roster.csv")
+    qa_waiver_df    = load("fantasy_waiver_wire",   "fantasy_waiver_wire.csv")
+    qa_standings_df = load("fantasy_team_stats",    "fantasy_team_stats.csv")
+    qa_matchup_df   = load("fantasy_matchup_cats",  "fantasy_matchup_cats.csv")
+    qa_injuries_df  = load("mlb_injuries",          "mlb_injuries.csv")
+    qa_schedule_df  = load("mlb_schedule",          "mlb_schedule.csv")
+
+    def build_qa_system_prompt():
+        """Build the system prompt with full live league context injected."""
+
+        def df_snippet(df, label, max_rows=150):
+            if df is None or df.empty:
+                return f"[{label}: no data available]\n"
+            return f"### {label}\n{df.head(max_rows).to_string(index=False)}\n\n"
+
+        # Filter injuries to S&P players only
+        snp_inj = qa_injuries_df
+        if not qa_injuries_df.empty and not qa_roster_df.empty:
+            snp_names_set = set(
+                snp_roster(qa_roster_df).get(
+                    "player_name",
+                    pd.Series(dtype=str)
+                ).tolist()
+            )
+            name_col = next(
+                (c for c in ["player_name", "Name", "name"] if c in qa_injuries_df.columns),
+                None
+            )
+            if name_col and snp_names_set:
+                snp_inj = qa_injuries_df[qa_injuries_df[name_col].isin(snp_names_set)]
+
+        system = f"""You are an expert fantasy baseball analyst for the team S&P.
+You have full access to live league data as of {date.today()}.
+
+LEAGUE RULES:
+- Format: 12-team H2H Categories, Yahoo Fantasy Baseball, League ID 37872
+- Scoring: R, HR, RBI, SB, OBP (hitting) | W, SV, K, ERA, WHIP (pitching)
+- Roster: C×1, 1B×1, 2B×1, 3B×1, SS×1, OF×3, Util×3, SP×2, RP×2, P×5, BN×4, IL×3
+- Max 7 acquisitions/week, rolling waiver priority, 30 IP minimum for pitching cats
+- Trade deadline: August 6, 2026
+- Playoffs: Top 6 qualify, Weeks 24–26, reseeding each round
+
+YOUR ROLE:
+- Answer any question about S&P's roster, trade targets, waiver pickups, matchup strategy, opponent scouting, or the rest of the league
+- Be direct and opinionated — give a clear recommendation, not just options
+- Back every recommendation with specific stats from the data below
+- When evaluating trades, identify which categories are helped/hurt and whether the deal improves playoff chances
+- Flag positions where S&P has 0–1 healthy active players as critical roster holes
+- Never invent stats — only reference numbers present in the data
+
+LIVE LEAGUE DATA:
+{df_snippet(qa_roster_df,    "All 12 Rosters (fantasy_team_name, player_name, position, status, ops, era, war, etc.)")}
+{df_snippet(qa_waiver_df,    "Waiver Wire — Top 75 Free Agents")}
+{df_snippet(qa_standings_df, "League Standings")}
+{df_snippet(qa_matchup_df,   "Current Week Category Stats (all teams)")}
+{df_snippet(snp_inj,         "S&P Injury / IL Log")}
+{df_snippet(qa_schedule_df,  "This Week's MLB Schedule + Probable Pitchers", max_rows=50)}
+"""
+        return system
+
+    # ── Header ───────────────────────────────────────────────────────────────
+    hdr_col, btn_col = st.columns([5, 1])
+    with hdr_col:
+        st.markdown("""
+        <div style='margin-bottom:4px'>
+          <span style='font-family:Bebas Neue,cursive;font-size:28px;letter-spacing:2px;color:#FFA110'>
+            Roster Q&amp;A
+          </span>
+          <span style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;
+                       color:rgba(255,161,16,0.5);margin-left:12px;text-transform:uppercase'>
+            Powered by Claude
+          </span>
+        </div>
+        <div style='font-family:DM Sans,sans-serif;font-size:12px;color:rgba(230,237,243,0.4);
+                    margin-bottom:20px'>
+          Ask anything — trade targets, waiver pickups, start/sit, opponent scouting, roster holes.
+        </div>
+        """, unsafe_allow_html=True)
+    with btn_col:
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+        if st.button("Clear chat", key="qa_clear"):
+            st.session_state.qa_messages = []
+            st.rerun()
+
+    # ── Chat history display ─────────────────────────────────────────────────
+    if st.session_state.qa_messages:
+        bubbles_html = '<div class="chat-wrap">'
+        for msg in st.session_state.qa_messages:
+            content = msg["content"].replace("\n", "<br>")
+            if msg["role"] == "user":
+                bubbles_html += f"""
+                <div style='display:flex;flex-direction:column;align-items:flex-end'>
+                  <div class='bubble-label' style='color:rgba(255,161,16,0.5);text-align:right'>You</div>
+                  <div class='bubble-user'>{content}</div>
+                </div>"""
+            else:
+                bubbles_html += f"""
+                <div style='display:flex;flex-direction:column;align-items:flex-start'>
+                  <div class='bubble-label' style='color:rgba(230,237,243,0.3)'>S&P Analyst</div>
+                  <div class='bubble-assistant'>{content}</div>
+                </div>"""
+        bubbles_html += "</div>"
+        st.markdown(bubbles_html, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style='text-align:center;padding:48px 24px;border:1px dashed rgba(255,161,16,0.15);
+                    border-radius:6px;margin-bottom:16px'>
+          <div style='font-family:Bebas Neue,cursive;font-size:22px;color:rgba(255,161,16,0.3);
+                      letter-spacing:2px;margin-bottom:10px'>Ask your first question</div>
+          <div style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:1px;
+                      color:rgba(230,237,243,0.2);line-height:2'>
+            "Team X wants [player] from my roster — what can I ask for in return?"<br>
+            "Who should I start at SP this week?"<br>
+            "What's my weakest category and who on the wire can help?"<br>
+            "Scout my opponent — where can I win this week?"
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Input ────────────────────────────────────────────────────────────────
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    input_col, send_col = st.columns([6, 1])
+    with input_col:
+        user_input = st.text_input(
+            label="question",
+            label_visibility="collapsed",
+            placeholder="Ask anything about your roster, trades, waivers, or matchups...",
+            key="qa_input",
+        )
+    with send_col:
+        send_clicked = st.button("Ask ⚾", type="primary", use_container_width=True)
+
+    # ── Handle send ──────────────────────────────────────────────────────────
+    if send_clicked and user_input.strip():
+        # Append user message
+        st.session_state.qa_messages.append({"role": "user", "content": user_input.strip()})
+
+        with st.spinner("Thinking..."):
+            try:
+                import anthropic
+
+                api_key = get_anthropic_key()
+                client  = anthropic.Anthropic(api_key=api_key)
+
+                # Build full message history for the API call
+                api_messages = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.qa_messages
+                ]
+
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1500,
+                    system=build_qa_system_prompt(),
+                    messages=api_messages,
+                )
+
+                answer = response.content[0].text
+                st.session_state.qa_messages.append({"role": "assistant", "content": answer})
+
+            except Exception as e:
+                st.session_state.qa_messages.append({
+                    "role": "assistant",
+                    "content": f"⚠️ Error reaching Claude: {e}"
+                })
+
+        st.rerun()
