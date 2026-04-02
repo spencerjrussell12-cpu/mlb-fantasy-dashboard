@@ -142,7 +142,7 @@ def pull_mlb_batting(year: int) -> pd.DataFrame:
     """Pull season-level batting stats from FanGraphs via pybaseball."""
     print(f"📊 Pulling MLB batting stats ({year})...")
     try:
-        df = batting_stats(year, qual=50)
+        df = batting_stats(year, qual=1)
         cols = {
             "Name": "player_name", "Team": "team", "G": "games",
             "PA": "plate_appearances", "AB": "at_bats", "H": "hits",
@@ -167,7 +167,7 @@ def pull_mlb_pitching(year: int) -> pd.DataFrame:
     """Pull season-level pitching stats from FanGraphs via pybaseball."""
     print(f"⚾ Pulling MLB pitching stats ({year})...")
     try:
-        df = pitching_stats(year, qual=20)
+        df = pitching_stats(year, qual=1)
         cols = {
             "Name": "player_name", "Team": "team", "G": "games",
             "GS": "games_started", "IP": "innings_pitched", "W": "wins",
@@ -322,7 +322,7 @@ def pull_my_roster_stats(query: YahooFantasySportsQuery) -> pd.DataFrame:
         for team in teams:
             team_name = str(team.name).strip("b'").strip("'")
             roster_stats = query.get_team_roster_player_stats_by_week(
-                team.team_id, chosen_week= 2
+                team.team_id, chosen_week="current"
             )
             for player in roster_stats:
                 row = {
@@ -599,6 +599,10 @@ def merge_fantasy_with_mlb(
     """Join fantasy player lists with real MLB stats."""
     print("🔗 Merging fantasy + MLB data...")
 
+    # Use only most recent season per player for roster/waiver enrichment
+    batting_df  = batting_df.sort_values("season", ascending=False).drop_duplicates(subset="player_name", keep="first")
+    pitching_df = pitching_df.sort_values("season", ascending=False).drop_duplicates(subset="player_name", keep="first")
+
     bat_cols = ["player_name", "team", "avg", "obp", "slg", "ops",
                 "wrc_plus", "war_bat", "k_pct", "bb_pct", "hard_hit_pct",
                 "home_runs", "runs", "rbi", "stolen_bases"]
@@ -697,15 +701,19 @@ def main():
     sheet = init_sheets()
 
     # ── MLB Stats ──────────────────────────────────────────────────────────────
+    batting_season_2023  = pull_mlb_batting(2023)
+    batting_season_2024  = pull_mlb_batting(2024)
     batting_season_2025  = pull_mlb_batting(2025)
     batting_season_2026  = pull_mlb_batting(2026)
+    pitching_season_2023 = pull_mlb_pitching(2023)
+    pitching_season_2024 = pull_mlb_pitching(2024)
     pitching_season_2025 = pull_mlb_pitching(2025)
     pitching_season_2026 = pull_mlb_pitching(2026)
     batting_recent       = pull_recent_batting(DATE_FROM, DATE_TO)
     pitching_recent      = pull_recent_pitching(DATE_FROM, DATE_TO)
     injuries             = pull_injuries()
-    batting_season       = pd.concat([batting_season_2025, batting_season_2026], ignore_index=True)
-    pitching_season      = pd.concat([pitching_season_2025, pitching_season_2026], ignore_index=True)
+    batting_season  = pd.concat([batting_season_2023, batting_season_2024, batting_season_2025, batting_season_2026], ignore_index=True)
+    pitching_season = pd.concat([pitching_season_2023, pitching_season_2024, pitching_season_2025, pitching_season_2026], ignore_index=True)
     schedule             = pull_upcoming_schedule()
 
     print()

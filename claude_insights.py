@@ -368,6 +368,8 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(OUTPUT_FILE, "w") as f:
         json.dump(insights, f, indent=2)
+        
+    export_insights_to_sheets(insights)
 
     print(f"\n✅ Insights saved → {OUTPUT_FILE}")
     print(   "   In Power BI: Get Data → JSON → point to this file")
