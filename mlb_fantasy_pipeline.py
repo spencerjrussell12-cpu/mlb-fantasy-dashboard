@@ -305,9 +305,26 @@ def pull_my_roster(query: YahooFantasySportsQuery) -> pd.DataFrame:
                     "status":            getattr(player, "status", "Active"),
                     "ownership_pct":     getattr(player, "percent_owned", None),
                 })
+
         df = pd.DataFrame(rows)
+
+        # Yahoo returns traded players on both old and new team — dedup on player_id.
+        # Keep the row with the HIGHER team_id (acquiring team).
+        before = len(df)
+        df["fantasy_team_id"] = pd.to_numeric(df["fantasy_team_id"], errors="coerce")
+        df = (
+            df.sort_values("fantasy_team_id", ascending=False)
+              .drop_duplicates(subset="player_id", keep="first")
+              .sort_values(["fantasy_team_id", "player_name"])
+              .reset_index(drop=True)
+        )
+        dupes = before - len(df)
+        if dupes:
+            print(f"   ⚠️  Removed {dupes} duplicate player row(s) (traded players)")
+
         print(f"   ✓ {len(df)} roster players loaded")
         return df
+
     except Exception as e:
         print(f"   ✗ Roster pull failed: {e}")
         return pd.DataFrame()
@@ -613,11 +630,32 @@ def merge_fantasy_with_mlb(
     bat_slim = batting_df[[c for c in bat_cols if c in batting_df.columns]].copy()
     pit_slim = pitching_df[[c for c in pit_cols if c in pitching_df.columns]].copy()
 
+    # Position sets for routing the merge
+    PITCHER_POSITIONS = {"SP", "RP", "P"}
+
+    def is_pitcher(pos_str):
+        positions = {p.strip() for p in str(pos_str).split(",")}
+        return bool(positions & PITCHER_POSITIONS)
+
     def enrich(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return df
-        merged = df.merge(bat_slim, on="player_name", how="left")
-        merged = merged.merge(pit_slim, on="player_name", how="left", suffixes=("", "_pitch"))
+
+        # Split into pitchers and position players by the position column
+        pitcher_mask = df["position"].apply(is_pitcher)
+        pos_players  = df[~pitcher_mask].copy()
+        pitchers     = df[pitcher_mask].copy()
+
+        # Position players: merge batting stats only
+        if not pos_players.empty:
+            pos_players = pos_players.merge(bat_slim, on="player_name", how="left")
+
+        # Pitchers: merge pitching stats only
+        if not pitchers.empty:
+            pitchers = pitchers.merge(pit_slim, on="player_name", how="left", suffixes=("", "_pitch"))
+
+        # Recombine and restore original row order
+        merged = pd.concat([pos_players, pitchers], ignore_index=True)
         return merged
 
     enriched_roster = enrich(roster_df)
@@ -625,8 +663,7 @@ def merge_fantasy_with_mlb(
 
     print(f"   ✓ Merged — roster: {len(enriched_roster)} rows | waiver: {len(enriched_waiver)} rows")
     return enriched_roster, enriched_waiver
-
-
+    
 # ─────────────────────────────────────────────────────────────────────────────
 # PART 4 — EXPORT (CSV + Google Sheets)
 # ─────────────────────────────────────────────────────────────────────────────
