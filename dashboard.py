@@ -1181,13 +1181,13 @@ Produce a structured scouting report with these sections:
 
 6. PREDICTED OUTCOME — Your honest category-by-category prediction and final score estimate (e.g. 6-4 S&P).
 
-Be direct, specific, and back everything with the stats in the data. Don't hedge."""
+Be direct, specific, and back everything with the stats in the data. Don't hedge. Be concise in each section — 3-5 sentences max per section. No bullet sub-bullets. Total response should fit in 1,500 words."""
 
                     api_key = get_anthropic_key()
                     client  = anthropic.Anthropic(api_key=api_key)
                     message = client.messages.create(
                         model="claude-sonnet-4-6",
-                        max_tokens=2000,
+                        max_tokens=3000,
                         system="You are an elite fantasy baseball scout analyzing weekly H2H matchups for team S&P in a 12-team categories league. Scoring: R, HR, RBI, SB, OBP (hitting) | W, SV, K, ERA, WHIP (pitching). Be direct, opinionated, and back every claim with stats from the data provided.",
                         messages=[{"role": "user", "content": prompt}],
                     )
