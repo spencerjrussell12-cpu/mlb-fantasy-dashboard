@@ -1268,6 +1268,7 @@ For each trade proposal you must:
 - Explain which categories S&P is giving up (and why that's acceptable)
 - Explain WHY the other manager would accept — what hole does it fill for them?
 - Rate the trade likelihood: HIGH / MEDIUM / LOW based on roster fit for both sides
+- Keep it concise. 2-3 sentences each
 
 LEAGUE DATA:
 {df_to_str(roster_raw, "All 12 Rosters with Stats")}
@@ -1290,7 +1291,7 @@ Each proposal: headline the deal clearly (e.g. "TRADE 1: Give Elly De La Cruz �
                 api_key = get_anthropic_key()
                 client  = anthropic.Anthropic(api_key=api_key)
                 message = client.messages.create(
-                    model="claude-sonnet-4-6", max_tokens=2500,
+                    model="claude-sonnet-4-6", max_tokens=3000,
                     system="You are an elite fantasy baseball GM analyzing trade opportunities for team S&P. You have full visibility into all 12 rosters. Be direct, specific, and back every recommendation with stats. Think like a GM — identify value discrepancies, roster needs, and mutual benefit.",
                     messages=[{"role": "user", "content": prompt}],
                 )
