@@ -252,6 +252,13 @@ h1, h2, h3 { font-family: 'Bebas Neue', cursive; letter-spacing: 2px; color: #FF
     border-radius: 3px;
     margin: 2px;
 }
+
+/* ── Trade card divider (Tab 7) ───────────────────────── */
+.trade-divider {
+    border: none;
+    border-top: 1px solid rgba(255,161,16,0.15);
+    margin: 32px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -375,6 +382,24 @@ def get_anthropic_key():
     return key
 
 
+def load_trade_context():
+    """Load all data needed for trade-related features."""
+    roster_raw   = load("fantasy_roster",       "fantasy_my_roster.csv")
+    batting_raw  = load("mlb_batting_season",   "mlb_batting_season.csv")
+    pitching_raw = load("mlb_pitching_season",  "mlb_pitching_season.csv")
+    r_stats_raw  = load("fantasy_roster_stats", "fantasy_roster_stats.csv")
+    standings_raw = load("fantasy_team_stats",  "fantasy_team_stats.csv")
+
+    for col in ["ops", "home_runs", "wrc_plus"]:
+        if col in batting_raw.columns:
+            batting_raw[col] = pd.to_numeric(batting_raw[col], errors="coerce")
+    for col in ["era", "whip"]:
+        if col in pitching_raw.columns:
+            pitching_raw[col] = pd.to_numeric(pitching_raw[col], errors="coerce")
+
+    return roster_raw, batting_raw, pitching_raw, r_stats_raw, standings_raw
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -426,13 +451,14 @@ st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "⚾  Fantasy Hub",
     "📊  League Overview",
     "🤖  AI Insights",
     "🔍  Player Deep Dive",
     "💬  Roster Q&A",
     "🕵️  Opponent Scouting",
+    "🔄  Trade Center",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -718,7 +744,7 @@ with tab2:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 3 — AI INSIGHTS
+# TAB 3 — AI INSIGHTS (clean — no trade analyzer)
 # ═════════════════════════════════════════════════════════════════════════════
 
 with tab3:
@@ -764,64 +790,6 @@ with tab3:
                 </div>
                 <div style='font-size:13px;line-height:1.8;color:rgba(230,237,243,0.8)'>{trade['analysis'].replace(chr(10), '<br>')}</div>
                 """, unsafe_allow_html=True)
-
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-    st.markdown('<div class="panel-title">LIVE TRADE ANALYZER</div>', unsafe_allow_html=True)
-
-    col_give, col_receive = st.columns(2)
-    with col_give:
-        trade_give = st.text_input("I GIVE", placeholder="e.g. Elly De La Cruz", key="trade_give")
-    with col_receive:
-        trade_receive = st.text_input("I RECEIVE", placeholder="e.g. Spencer Strider + Pete Fairbanks", key="trade_receive")
-
-    if st.button("⚾ Analyze Trade", type="primary"):
-        if trade_give and trade_receive:
-            with st.spinner("Asking Claude..."):
-                try:
-                    import anthropic
-                    roster_raw   = load("fantasy_roster",       "fantasy_my_roster.csv")
-                    batting_raw  = load("mlb_batting_season",   "mlb_batting_season.csv")
-                    pitching_raw = load("mlb_pitching_season",  "mlb_pitching_season.csv")
-                    r_stats_raw  = load("fantasy_roster_stats", "fantasy_roster_stats.csv")
-                    for col in ["ops", "home_runs", "wrc_plus"]:
-                        if col in batting_raw.columns: batting_raw[col] = pd.to_numeric(batting_raw[col], errors="coerce")
-                    for col in ["era", "whip"]:
-                        if col in pitching_raw.columns: pitching_raw[col] = pd.to_numeric(pitching_raw[col], errors="coerce")
-                    snp       = snp_roster(roster_raw)
-                    snp_stats = snp_roster(r_stats_raw)
-                    prompt = f"""Today is {date.today()}. Analyze this potential trade for my fantasy team S&P:
-MY TEAM GIVES: {trade_give}
-MY TEAM RECEIVES: {trade_receive}
-MY CURRENT ROSTER:\n{snp.to_string(index=False)}
-MY CURRENT WEEKLY CATEGORY STANDINGS:\n{snp_stats.head(30).to_string(index=False)}
-SEASON BATTING STATS (top 50):\n{batting_raw.head(50).to_string(index=False)}
-SEASON PITCHING STATS (top 50):\n{pitching_raw.head(50).to_string(index=False)}
-Remember this is a 10-category H2H league (R, HR, RBI, SB, OBP, W, SV, K, ERA, WHIP).
-1. VERDICT: Accept / Decline / Counter
-2. CATEGORY IMPACT — for each of the 10 categories, does this trade help, hurt, or neutral?
-3. ROSTER FIT — how does this change my team construction?
-4. COUNTER OFFER — if declining, what would make this trade fair?
-5. LONG TERM VIEW — does this help me for the playoffs (top 6 qualify, weeks 24-26)?"""
-                    api_key = get_anthropic_key()
-                    client  = anthropic.Anthropic(api_key=api_key)
-                    message = client.messages.create(
-                        model="claude-sonnet-4-6", max_tokens=1500,
-                        system="You are an elite fantasy baseball analyst managing S&P in a 12-team H2H Categories league. Scoring: R, HR, RBI, SB, OBP (hitting) and W, SV, K, ERA, WHIP (pitching). Be direct, back every recommendation with stats, never make up numbers not in the data.",
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    result = message.content[0].text
-                    st.markdown(f"""
-                    <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);border-radius:4px;padding:24px;margin-top:16px'>
-                      <div style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;color:rgba(255,161,16,0.7);margin-bottom:16px'>
-                        ● TRADE ANALYSIS — {trade_give.upper()} FOR {trade_receive.upper()}
-                      </div>
-                      <div style='font-size:13px;line-height:1.8;color:rgba(230,237,243,0.8)'>{result.replace(chr(10), '<br>')}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Analysis failed: {e}")
-        else:
-            st.warning("Enter both sides of the trade first.")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1026,7 +994,6 @@ LIVE LEAGUE DATA:
 
 with tab6:
 
-    # ── Load data ────────────────────────────────────────────────────────────
     sc_roster_df    = load("fantasy_roster",       "fantasy_my_roster.csv")
     sc_matchup_cats = load("fantasy_matchup_cats", "fantasy_matchup_cats.csv")
     sc_matchup_raw  = load("fantasy_matchup",      "fantasy_matchup.csv")
@@ -1034,7 +1001,6 @@ with tab6:
     sc_schedule_df  = load("mlb_schedule",         "mlb_schedule.csv")
     sc_injuries_df  = load("mlb_injuries",         "mlb_injuries.csv")
 
-    # ── Identify opponent ─────────────────────────────────────────────────────
     opp_name  = None
     snp_cats  = None
     opp_cats  = None
@@ -1054,7 +1020,6 @@ with tab6:
             opp_rows = sc_matchup_cats[sc_matchup_cats["fantasy_team_name"].str.contains(opp_name.strip(), na=False, regex=False)]
             if not opp_rows.empty: opp_cats = opp_rows.iloc[0]
 
-    # ── Header ───────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div style='margin-bottom:4px'>
       <span style='font-family:Bebas Neue,cursive;font-size:28px;letter-spacing:2px;color:#FFA110'>Opponent Scouting</span>
@@ -1070,7 +1035,6 @@ with tab6:
         </div>
         """, unsafe_allow_html=True)
     else:
-        # ── Opponent identity bar ─────────────────────────────────────────────
         st.markdown(f"""
         <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.2);border-radius:4px;
                     padding:16px 24px;margin-bottom:20px;display:flex;align-items:center;gap:16px'>
@@ -1079,10 +1043,8 @@ with tab6:
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Category win/loss pills ───────────────────────────────────────────
         if snp_cats is not None and opp_cats is not None:
             st.markdown('<div class="panel-title">CURRENT CATEGORY STANDING</div>', unsafe_allow_html=True)
-
             cats    = ["Runs", "HR", "RBI", "SB", "OBP", "Wins", "Saves", "K", "ERA", "WHIP"]
             abbrevs = ["R",    "HR", "RBI", "SB", "OBP", "W",    "SV",    "K", "ERA", "WHIP"]
             win_cats = []; loss_cats = []; tie_cats = []
@@ -1113,7 +1075,6 @@ with tab6:
 
             st.markdown(f"<div style='margin-bottom:24px'>{pills}</div>", unsafe_allow_html=True)
 
-        # ── Opponent roster ───────────────────────────────────────────────────
         opp_roster = pd.DataFrame()
         if not sc_roster_df.empty:
             opp_roster = sc_roster_df[sc_roster_df["fantasy_team_name"].str.contains(opp_name.strip(), na=False, regex=False)]
@@ -1121,12 +1082,8 @@ with tab6:
         if not opp_roster.empty:
             st.markdown('<div class="panel-title">OPPONENT ROSTER</div>', unsafe_allow_html=True)
             disp_cols = [c for c in ["player_name", "position", "status", "ops", "era", "war_bat", "war_pitch"] if c in opp_roster.columns]
-            st.dataframe(
-                opp_roster[disp_cols].rename(columns={"player_name": "Player", "position": "Pos", "status": "Status", "ops": "OPS", "era": "ERA", "war_bat": "WAR(B)", "war_pitch": "WAR(P)"}),
-                hide_index=True, use_container_width=True, height=300,
-            )
+            st.dataframe(opp_roster[disp_cols].rename(columns={"player_name": "Player", "position": "Pos", "status": "Status", "ops": "OPS", "era": "ERA", "war_bat": "WAR(B)", "war_pitch": "WAR(P)"}), hide_index=True, use_container_width=True, height=300)
 
-        # ── Generate scouting report ──────────────────────────────────────────
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
         if st.button("🕵️ Generate Scouting Report", type="primary"):
@@ -1169,35 +1126,26 @@ THIS WEEK'S SCHEDULE:
 
 Produce a structured scouting report with these sections:
 
-1. OPPONENT OVERVIEW — Who are they, where do they stand, what's their roster identity (power hitters? ace pitching? speed?)
+1. OPPONENT OVERVIEW — Who are they, where do they stand, what's their roster identity?
+2. THEIR STRENGTHS — Which categories are they dominant in? Name specific players with stats.
+3. THEIR WEAKNESSES — Which categories can S&P steal wins in?
+4. PLAYERS TO WATCH — Their 3 most dangerous players and why.
+5. S&P GAME PLAN — Specific strategic advice for this matchup.
+6. PREDICTED OUTCOME — Category-by-category prediction and final score estimate.
 
-2. THEIR STRENGTHS — Which of the 10 categories (R, HR, RBI, SB, OBP, W, SV, K, ERA, WHIP) are they dominant in? Name specific players driving those categories with stats.
-
-3. THEIR WEAKNESSES — Which categories are they vulnerable in this week? Where can S&P steal wins?
-
-4. PLAYERS TO WATCH — Their 3 most dangerous players I need to be aware of, and why.
-
-5. S&P GAME PLAN — Specific strategic advice for this matchup. Which categories should S&P target to win? Any lineup decisions, streaming moves, or waiver adds that would help this week specifically?
-
-6. PREDICTED OUTCOME — Your honest category-by-category prediction and final score estimate (e.g. 6-4 S&P).
-
-Be direct, specific, and back everything with the stats in the data. Don't hedge. Be concise in each section — 3-5 sentences max per section. No bullet sub-bullets. Total response should fit in 1,500 words."""
+Be direct, specific, back everything with stats. Be concise — 3-5 sentences per section, 1,500 words max."""
 
                     api_key = get_anthropic_key()
                     client  = anthropic.Anthropic(api_key=api_key)
                     message = client.messages.create(
-                        model="claude-sonnet-4-6",
-                        max_tokens=3000,
-                        system="You are an elite fantasy baseball scout analyzing weekly H2H matchups for team S&P in a 12-team categories league. Scoring: R, HR, RBI, SB, OBP (hitting) | W, SV, K, ERA, WHIP (pitching). Be direct, opinionated, and back every claim with stats from the data provided.",
+                        model="claude-sonnet-4-6", max_tokens=3000,
+                        system="You are an elite fantasy baseball scout analyzing weekly H2H matchups for team S&P in a 12-team categories league. Scoring: R, HR, RBI, SB, OBP (hitting) | W, SV, K, ERA, WHIP (pitching). Be direct, opinionated, back every claim with stats.",
                         messages=[{"role": "user", "content": prompt}],
                     )
                     report = message.content[0].text
-
                     st.markdown(f"""
-                    <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);
-                                border-radius:4px;padding:28px 32px;margin-top:8px'>
-                      <div style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;
-                                  color:rgba(255,161,16,0.7);margin-bottom:20px'>
+                    <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);border-radius:4px;padding:28px 32px;margin-top:8px'>
+                      <div style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;color:rgba(255,161,16,0.7);margin-bottom:20px'>
                         ● SCOUTING REPORT — {opp_name.upper()} — WEEK {week_label}
                       </div>
                       <div style='font-size:13px;line-height:1.85;color:rgba(230,237,243,0.85);font-family:DM Sans,sans-serif'>
@@ -1205,6 +1153,158 @@ Be direct, specific, and back everything with the stats in the data. Don't hedge
                       </div>
                     </div>
                     """, unsafe_allow_html=True)
-
                 except Exception as e:
                     st.error(f"Scouting report failed: {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 7 — TRADE CENTER
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab7:
+
+    st.markdown("""
+    <div style='margin-bottom:4px'>
+      <span style='font-family:Bebas Neue,cursive;font-size:28px;letter-spacing:2px;color:#FFA110'>Trade Center</span>
+      <span style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;color:rgba(255,161,16,0.5);margin-left:12px;text-transform:uppercase'>Powered by Claude</span>
+    </div>
+    <div style='font-family:DM Sans,sans-serif;font-size:12px;color:rgba(230,237,243,0.4);margin-bottom:28px'>
+      Evaluate any trade or let Claude scan all 12 rosters and surface the best deals S&P should be pursuing.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Section 1: Live Trade Analyzer ───────────────────────────────────────
+    st.markdown('<div class="panel-title">LIVE TRADE ANALYZER</div>', unsafe_allow_html=True)
+    st.markdown("<div style='font-family:DM Sans,sans-serif;font-size:12px;color:rgba(230,237,243,0.35);margin-bottom:16px'>Enter both sides of a proposed trade and get an instant verdict with category-by-category impact.</div>", unsafe_allow_html=True)
+
+    col_give, col_receive = st.columns(2)
+    with col_give:
+        trade_give = st.text_input("I GIVE", placeholder="e.g. Elly De La Cruz", key="trade_give")
+    with col_receive:
+        trade_receive = st.text_input("I RECEIVE", placeholder="e.g. Spencer Strider + Pete Fairbanks", key="trade_receive")
+
+    if st.button("⚾ Analyze Trade", type="primary", key="analyze_trade_btn"):
+        if trade_give and trade_receive:
+            with st.spinner("Analyzing trade..."):
+                try:
+                    import anthropic
+                    roster_raw, batting_raw, pitching_raw, r_stats_raw, standings_raw = load_trade_context()
+                    snp       = snp_roster(roster_raw)
+                    snp_stats = snp_roster(r_stats_raw)
+
+                    prompt = f"""Today is {date.today()}. Analyze this potential trade for my fantasy team S&P:
+MY TEAM GIVES: {trade_give}
+MY TEAM RECEIVES: {trade_receive}
+
+MY CURRENT ROSTER:
+{snp.to_string(index=False)}
+
+MY CURRENT WEEKLY CATEGORY STANDINGS:
+{snp_stats.head(30).to_string(index=False)}
+
+SEASON BATTING STATS (top 50):
+{batting_raw.head(50).to_string(index=False)}
+
+SEASON PITCHING STATS (top 50):
+{pitching_raw.head(50).to_string(index=False)}
+
+This is a 10-category H2H league (R, HR, RBI, SB, OBP, W, SV, K, ERA, WHIP).
+
+1. VERDICT: Accept / Decline / Counter
+2. CATEGORY IMPACT — for each of the 10 categories, does this trade help, hurt, or neutral?
+3. ROSTER FIT — how does this change my team construction?
+4. COUNTER OFFER — if declining, what would make this trade fair?
+5. LONG TERM VIEW — does this help for the playoffs (top 6 qualify, weeks 24-26)?"""
+
+                    api_key = get_anthropic_key()
+                    client  = anthropic.Anthropic(api_key=api_key)
+                    message = client.messages.create(
+                        model="claude-sonnet-4-6", max_tokens=1500,
+                        system="You are an elite fantasy baseball analyst managing S&P in a 12-team H2H Categories league. Scoring: R, HR, RBI, SB, OBP (hitting) and W, SV, K, ERA, WHIP (pitching). Be direct, back every recommendation with stats, never make up numbers not in the data.",
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    result = message.content[0].text
+                    st.markdown(f"""
+                    <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);border-radius:4px;padding:24px;margin-top:16px'>
+                      <div style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;color:rgba(255,161,16,0.7);margin-bottom:16px'>
+                        ● TRADE ANALYSIS — {trade_give.upper()} FOR {trade_receive.upper()}
+                      </div>
+                      <div style='font-size:13px;line-height:1.8;color:rgba(230,237,243,0.8)'>{result.replace(chr(10), '<br>')}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Analysis failed: {e}")
+        else:
+            st.warning("Enter both sides of the trade first.")
+
+    # ── Divider ───────────────────────────────────────────────────────────────
+    st.markdown("<hr class='trade-divider'>", unsafe_allow_html=True)
+
+    # ── Section 2: AI Trade Value Engine ─────────────────────────────────────
+    st.markdown('<div class="panel-title">AI TRADE VALUE ENGINE</div>', unsafe_allow_html=True)
+    st.markdown("<div style='font-family:DM Sans,sans-serif;font-size:12px;color:rgba(230,237,243,0.35);margin-bottom:16px'>Claude scans all 12 rosters and surfaces the top 3 trades S&P should be pursuing — who to target, who to offer, and why the other manager would say yes.</div>", unsafe_allow_html=True)
+
+    if st.button("🔍 Find Best Trades for S&P", type="primary", key="trade_engine_btn"):
+        with st.spinner("Scanning all 12 rosters for trade opportunities..."):
+            try:
+                import anthropic
+                roster_raw, batting_raw, pitching_raw, r_stats_raw, standings_raw = load_trade_context()
+                snp      = snp_roster(roster_raw)
+                matchup_cats_te = load("fantasy_matchup_cats", "fantasy_matchup_cats.csv")
+
+                def df_to_str(df, label, max_rows=150):
+                    if df is None or df.empty: return f"[{label}: no data]\n"
+                    return f"### {label}\n{df.head(max_rows).to_string(index=False)}\n\n"
+
+                prompt = f"""Today is {date.today()}. You are a proactive fantasy baseball GM for team S&P.
+
+Scan ALL 12 rosters and identify the top 3 trades S&P should pursue RIGHT NOW.
+
+For each trade proposal you must:
+- Name the specific player(s) S&P should GIVE
+- Name the specific player(s) S&P should RECEIVE
+- Identify which team owns the target
+- Explain which of the 10 categories this improves for S&P (with current stats)
+- Explain which categories S&P is giving up (and why that's acceptable)
+- Explain WHY the other manager would accept — what hole does it fill for them?
+- Rate the trade likelihood: HIGH / MEDIUM / LOW based on roster fit for both sides
+
+LEAGUE DATA:
+{df_to_str(roster_raw, "All 12 Rosters with Stats")}
+{df_to_str(matchup_cats_te, "Current Week Category Stats (all teams)")}
+{df_to_str(standings_raw, "League Standings")}
+{df_to_str(batting_raw.head(100), "Season Batting Stats (top 100)")}
+{df_to_str(pitching_raw.head(100), "Season Pitching Stats (top 100)")}
+
+S&P ROSTER FOCUS:
+{snp.to_string(index=False)}
+
+LEAGUE RULES:
+- 10-category H2H: R, HR, RBI, SB, OBP (hitting) | W, SV, K, ERA, WHIP (pitching)
+- Trade deadline: August 6, 2026
+- Playoffs: Top 6 qualify, weeks 24-26
+
+FORMAT YOUR RESPONSE AS 3 NUMBERED TRADE PROPOSALS.
+Each proposal: headline the deal clearly (e.g. "TRADE 1: Give Elly De La Cruz → Receive Corbin Carroll + Kyle Hendricks"), then cover the 5 points above. Be direct and specific. Back every claim with stats from the data. No hedging."""
+
+                api_key = get_anthropic_key()
+                client  = anthropic.Anthropic(api_key=api_key)
+                message = client.messages.create(
+                    model="claude-sonnet-4-6", max_tokens=2500,
+                    system="You are an elite fantasy baseball GM analyzing trade opportunities for team S&P. You have full visibility into all 12 rosters. Be direct, specific, and back every recommendation with stats. Think like a GM — identify value discrepancies, roster needs, and mutual benefit.",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                result = message.content[0].text
+                st.markdown(f"""
+                <div style='background:#0D1117;border:1px solid rgba(255,161,16,0.25);border-radius:4px;padding:28px 32px;margin-top:8px'>
+                  <div style='font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:2px;color:rgba(255,161,16,0.7);margin-bottom:20px'>
+                    ● AI TRADE VALUE ENGINE — {date.today().strftime('%b %d, %Y').upper()}
+                  </div>
+                  <div style='font-size:13px;line-height:1.85;color:rgba(230,237,243,0.85);font-family:DM Sans,sans-serif'>
+                    {result.replace(chr(10), '<br>')}
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            except Exception as e:
+                st.error(f"Trade engine failed: {e}")
